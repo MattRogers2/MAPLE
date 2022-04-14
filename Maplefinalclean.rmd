@@ -1,0 +1,3212 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+#Load in libraries
+```{r Load data library setup}
+library(DirichletMultinomial)
+library(lattice)
+library(xtable)
+library(parallel)
+library("ggplot2")
+library("PMA")
+library("dplyr")
+library("ade4")
+library("doParallel")
+library("hablar")
+library("DT")
+library("exactRankTests")
+library("foreach")
+library("coin")
+library("Rcpp")
+library("Hmisc")
+library("genefilter")
+library("ggrepel")
+library("phyloseq")
+library("vegan")
+library("gplots")
+library("reshape2")
+library("hues")
+library("gridExtra")
+library("tidyverse")
+library("knitr")
+library("openxlsx")
+library("purrr")
+library("lubridate")
+library("microbiome")
+library("kableExtra")
+library(pairwiseAdonis)
+source("~/Desktop/RandomCommands/limmaphyloseq.r")
+library(magrittr)
+library("graph4lg")
+source("~/Downloads/MicrobeMiseq-master/R/miseqR.R")
+source("/Users/rogersm/AdaptQiime2/NewAnalysis/NewAnCom/ancom_updated_code.r")
+source("/Users/rogersm/sanitizefunctions.r")
+library("microbiome")
+library("Maaslin2")
+source("~/BioScripts/ANCOM-BC-master/scripts/ancom_bc_v1.0.R")
+library(dplyr)
+library(nloptr)
+numvars<-c(12,15,40,41,42,43,44)
+library("phytools")
+`%notin%` <- Negate(`%in%`)
+```
+
+##Read in Datafiles and format plot sample amplicon counts
+```{r,error=FALSE,echo=FALSE,warning=FALSE, echo=FALSE, warning=FALSE, r,error=FALSE}
+ps<-import_biom("/Users/rogersm/MAPLE/SALMerge/Export/Maple.biom",treefilename="/Users/rogersm/MAPLE/SALMerge/Export/tree.nwk",refseqfilename="/Users/rogersm/MAPLE/SALMerge/Export/dna-sequences.fasta",parseFunction=parse_taxonomy_greengenes)
+tree<-phy_tree(ps)
+roottree<-midpoint.root(tree)
+phy_tree(ps)<-roottree
+meta<-sample_data(ps)
+meta$SampleID2<-rownames(meta)
+sample_data(ps)<-meta
+#samplethings<-sample_data(ps)
+#sort(sample_sums(ps))
+meta<-sample_data(ps)
+sums<-sample_sums(ps)
+sums<-cbind(meta,sums)
+#Remove outlier points CRS_02_011_00_DSA2, CRS_01_007_02_S
+a<-ggplot(sums, aes(x=sums))+geom_histogram(bins=100,fill="dodgerblue")+scale_x_log10()+xlab("Sample Sums (log10)")+theme_classic()+geom_vline(xintercept=21390.5)
+psall<-prune_samples(sample_sums(ps)>=4000,ps)%>%prune_taxa(taxa_sums(.) > 0, .)
+metadata<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx")
+metadata2<-metadata[-c(2:4),]
+colnames(metadata2)<-metadata2[1,]
+metadata2<-metadata2[-1,]
+metadata2<-metadata2[,-1]
+q<-colnames(metadata2)
+q<-gsub(" ","_",q)
+q<-gsub("_$","",q)
+colnames(metadata2)<-q
+meta<-sample_data(psall)
+colnames(meta)[1]<-"Patient"
+colnames(metadata2)[2]<-"Patient"
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+colnames(meta)[1]<-"Batch"
+table2<-right_join(metadata2,meta, by="Patient")
+#table2<-cbind(table2,meta$Patient)
+metaABX<-read.xlsx("~/MAPLE/MAPLE_ABX.xlsx",sheet=4)
+colnames(metaABX)[2]<-"Subject_ID"
+metaABX$Subject_ID<-as.factor(metaABX$Subject_ID)
+table3<-left_join(table2,metaABX, by="Subject_ID")
+rownames(table3)<-table3$SampleID2
+Sample_ID<-table3$SampleID2
+table4<-cbind(Sample_ID,table3)
+metaoutcomes<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=5)
+colnames(metaoutcomes)<-metaoutcomes[1,]
+metaoutcomes<-metaoutcomes[-c(1:4),]
+table5<-left_join(table4,metaoutcomes, by="Subject_ID")
+rownames(table5)<-table5$Sample_ID
+#table5[1:290,11]<-"Reference" 
+#metalrti<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=2)
+#colnames(metalrti)[1]<-"Subject_ID"
+#table6<-left_join(table5,metalrti, by="Subject_ID")
+sample_data(psall)<-table5
+meta<-sample_data(psall)
+LRTIstatus<-cbind(table5$OUTCOME_CAP,table5$OUTCOME_HCAP,table5$OUTCOME_Acute_Bronchitis)
+LRTIstatus<-gsub("n",0,LRTIstatus)
+LRTIstatus<-gsub("y",1,LRTIstatus)
+LRTIstatus<-gsub("\\.",0,LRTIstatus)
+rownames(LRTIstatus)<-meta$Sample_ID
+LRTIstatus<-as.data.frame(LRTIstatus)
+LRTIstatus[is.na(LRTIstatus)]<-0
+LRTIstatus<-apply(LRTIstatus, 2, function(x) as.numeric(x))
+LRTIdecision<-rowSums(LRTIstatus)
+LRTIdecision[LRTIdecision>0]<-"y"
+LRTIdecision[LRTIdecision==0]<-"n"
+table6<-cbind(table5,LRTIdecision)
+table6$city<-table6$Site.x
+sample_data(psall)<-table6
+LRTIdiagnosis<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=3)
+LRTIdiagnosisclass<-cbind(LRTIdiagnosis$stnum,LRTIdiagnosis$hosp_diagnosis)
+rownames(LRTIdiagnosisclass)<-rownames(LRTIdiagnosis)
+colnames(LRTIdiagnosisclass)<-c("Subject_ID","LRTICLASS")
+LRTIdiagnosisclass<-as.data.frame(LRTIdiagnosisclass)
+LRTIpositive<-subset(LRTIdiagnosisclass, (LRTICLASS=="1"|LRTICLASS=="4"|LRTICLASS=="6"))
+psall<-subset_samples(psall,Site.y=="F"|Site.y=="O")
+
+#Remove samples that are associated with contaminated control EC5
+#0126_MAPL_01_11100_O_1
+#0126_MAPL_01_11165_F_3
+#0126_MAPL_01_11165_O_3
+#0126_MAPL_01_11344_F_3
+#0126_MAPL_01_11344_O_3
+psall<-subset_samples(psall,Sample_ID!="MAPL-01-11100-O-1"&Sample_ID!="MAPL-01-11165-F-3"&Sample_ID!="MAPL-01-11165-O-3"&Sample_ID!="MAPL-01-11344-F-3"&Sample_ID!="MAPL-01-11344-O-3")
+
+#Remove samples that are too similar to fecal sample from same patient (likely mislabelled)
+#MAPL-01-310237-O-2
+#MAPL-01-310237-O-3
+psall<-subset_samples(psall,Sample_ID!="MAPL-01-310237-O-2"&Sample_ID!="MAPL-01-310237-O-3")
+psall<-psall%>%prune_taxa(taxa_sums(.) > 0, .)
+```
+
+##Add age and Sex to DRDR samples
+```{r}
+#DRDR meta
+#Age comparisons DRDR v Maple
+DRDR<-subset_samples(psall,Batch==2)
+metadata<-meta(DRDR)
+rns<-rownames(metadata)
+rns<-gsub("ASAL-","",rns)
+rns<-gsub("-NA-OW","",rns)
+metaDRDR<-read.xlsx("~/MapleFigs/Totallyfinalfiles/DRDR_Healthy_Controls_Self_Report.xlsx")
+patientno<-metaDRDR$orderparticipated
+patientno<-paste0("ASAL-",patientno,"-NA-OW")
+rownames(metaDRDR)<-patientno
+metaDRDR$gender<-factor(metaDRDR$gender,levels=c(0,1),labels=c("M","F"))
+metaDRDR$ethnicity<-factor(metaDRDR$ethnicity, levels=c(1,2,3,4,5,6,7),labels=c("White","Hispanic","African American","Asian","Asian","Black","Unknown"))
+rownames(metaDRDR)<-metaDRDR$orderparticipated
+metaDRDR$orderparticipated<-factor(metaDRDR$orderparticipated)
+rns<-as.numeric(rns)
+meta2<-metaDRDR[metaDRDR$orderparticipated%in%rns,]
+#meta2$gender<-factor(meta2$gender,levels=c(0,1),labels=c("M","F"))
+#meta2$ethnicity<-factor(meta2$ethnicity, levels=c(1,2,3,4,5,6,7),labels=c("White","Hispanic","African American","Asian","Asian","Black","Unknown"))'
+summary(meta2$gender)
+mean(meta2$age)
+sd(meta2$age)
+summary(meta2$ethnicity)
+metadata<-read.table("/Users/rogersm/DRDRmeta.txt",sep="\t",header=T)
+metadata<-metadata[,-1]
+rownames(metadata)<-metadata[,1]
+sample_data(psall)<-metadata
+```
+
+#Remove DRDR samples below Age 18
+```{r}
+psageadjusted<-subset_samples(psall,Batch==1|(Batch=="2"&Age>18))
+meta<-meta(psageadjusted)
+metahealthy<-subset(meta,Batch==2)
+metaLRTI<-subset(meta,Batch==1&Time==1&Site.y=="O")
+t.test(metaLRTI$Age,metahealthy$Age)
+
+```
+#Samples per time point
+```{r}
+meta<-meta(psageadjusted)
+metaLRTI<-subset(meta,Batch==1&Site.y=="O")
+
+Timesummarize<-metaLRTI%>%group_by(Subject_ID)%>%tally()
+metaall<-subset(metaLRTI,X00hr_Saliva==1&X24hr_Saliva==1&X30_Day_Saliva==1)
+unique(metaall$Patient)
+
+metaall<-subset(metaLRTI,X00hr_Saliva==1&X24hr_Saliva==1)
+length(unique(metaall$Patient))
+```
+
+#Alpha Diversity, Figure 1A
+```{r Alpha diversity All samples}
+ps_rare<-rarefy_even_depth(psageadjusted,rng=9999)
+ps_rare<-ps_rare%>%prune_taxa(taxa_sums(.) > 0, .)
+meta<-meta(ps_rare)
+alpha<-estimate_richness(ps_rare, measures=c("Chao1","Shannon"))
+All<-cbind(meta,alpha)
+All$BatchSite<-paste0(All$Batch,"_",All$Site.y)
+All$BatchSite<-factor(All$BatchSite, levels=c("1_F","1_O","2_O"),labels=c("Maple Fecal Samples","Maple Oral Samples","DRDR Saliva Samples"))
+AlphaAllsamples<-ggplot(All, aes(x=BatchSite, y=Shannon))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1))+theme_classic()+xlab("Site")+ylab("Shannon Diversity")+ggtitle("A")
+pwalphawx<-pairwise.wilcox.test(All$Shannon,All$BatchSite,p.adjust.method="BH")
+kable(pwalphawx$p.value,format="pipe")
+
+```
+
+##All data beta diversity calcs, Figure 1B
+```{r Beta Diversity All samples}
+ps_rare<-subset_samples(ps_rare,Age!="NA")
+meta<-sample_data(ps_rare)
+Allsamplesunifrac<-UniFrac(ps_rare,weighted=TRUE)
+ord <- ordinate(ps_rare, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompareall<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, shape=BatchSite,colour=Age))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+scale_color_brewer()
+Batchcompareall2<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, shape=BatchSite,colour=Age))+geom_point(size=3)+theme_classic()+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+scale_color_distiller(palette = "Spectral")
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+meta$Age<-as.numeric(as.character(meta$Age))
+ad2<-adonis2(Allsamplesunifrac~BatchSite*Age, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite*Age,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+PCOAallsites<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=BatchSite))+geom_point(data=metavecs,alpha=0.8,size=1)+geom_point(data=cents,size=4)+theme_classic()+scale_colour_manual(values=c("dark green","red","navy blue"))+xlab("PCoA1 (25.7%)")+ylab("PCoA2 (10.4%)")+ggtitle("B")
+
+metavecs$Age<-as.numeric(as.character(metavecs$Age))
+PCOAallsites2<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,shape=BatchSite,colour=Age))+geom_point(data=metavecs,alpha=0.8)+theme_classic()+xlab("PCoA1 (27.6%)")+ylab("PCoA2 (12.6%)")+scale_color_distiller(palette = "Spectral")
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/Fig1.pdf",width=8.5,height=11,useDingbats = FALSE)
+grid.arrange(AlphaAllsamples,PCOAallsites)
+dev.off()
+
+#ad2<-adonis2(Allsamplesunifrac~BatchSite*Age*Sex*Race, data=meta,permutations=perm)
+
+```
+
+#Graph with Ages
+```{r}
+
+ps_rare2<-subset_samples(ps_rare,Age!="NA"&Time==1)
+meta<-sample_data(ps_rare)
+Allsamplesunifrac<-UniFrac(ps_rare2,weighted=TRUE)
+ord <- ordinate(ps_rare2, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompareall<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, shape=BatchSite,colour=Age))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+scale_color_brewer()
+Batchcompareall2<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, shape=BatchSite,colour=Age))+geom_point(size=3)+theme_classic()+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+scale_color_distiller(palette = "Spectral")
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+meta$Age<-as.numeric(as.character(meta$Age))
+ad2<-adonis2(Allsamplesunifrac~BatchSite*Age, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+metavecs<-cbind(meta,vecs)
+metavecs$Agelabel<-""
+metavecslessthen30<-metavecs[metavecs$Age<=40,]
+metavecslessthen30$Agelabel<-"Less or equal to 30"
+metavecsmorethan30<-metavecs[metavecs$Age>40,]
+metavecsmorethan30$Agelabel<-"More than 40"
+metavecs2<-rbind(metavecslessthen30,metavecsmorethan30)
+PCOAallsites<-ggplot(metavecs2, aes(x=PCoA1, y=PCoA2,colour=BatchSite,shape=Agelabel,label=Agelabel))+geom_point(data=metavecs2,alpha=0.5,size=3)+theme_classic()+scale_colour_manual(values=c("dark green","red","navy blue"))+xlab("PCoA1 (25.7%)")+ylab("PCoA2 (10.4%)")+ggtitle("B")+scale_shape_manual(values=c(1,16))+geom_text_repel(max.overlaps=300)
+
+
+Allsamplesunifracm<-as.matrix(Allsamplesunifrac)
+metavecs$Site.y<-as.vector(metavecs$Site.y)
+metaUnifrac<-cbind(metavecs,Allsamplesunifracm)
+YoungAgeselectvector<-as.vector("")
+count=0
+for (i in 1:dim(metaUnifrac)[1]){
+  count<-count+1
+  tmp<-metaUnifrac[i,]
+  if (tmp$BatchSite=="1_F"&tmp$Age<=55){
+    YoungAgeselectvector[i]<-count
+  }
+}
+
+YoungAgeselectvector<-na.omit(YoungAgeselectvector)
+YoungAgeselectvector<-as.vector(YoungAgeselectvector)
+YoungAgeselectvector<-YoungAgeselectvector[-1]
+FecalYoungAgeselectvector<-as.numeric(YoungAgeselectvector)
+
+
+OldAgeselectvector<-as.vector("")
+count=0
+for (i in 1:dim(metaUnifrac)[1]){
+  count<-count+1
+  tmp<-metaUnifrac[i,]
+    if (tmp$BatchSite=="1_F"&tmp$Age>55){
+    OldAgeselectvector[i]<-count
+  }
+}
+OldAgeselectvector<-na.omit(OldAgeselectvector)
+OldAgeselectvector<-as.vector(OldAgeselectvector)
+OldAgeselectvector<-OldAgeselectvector[-1]
+FecalOldAgeselectvector<-as.numeric(OldAgeselectvector)
+
+count=0
+MapleOralsamplesselectvector<-as.vector("")
+for (i in 1:dim(metaUnifrac)[1]){
+  count<-count+1
+  tmp<-metaUnifrac[i,]
+  if (tmp$Batch=="1"&tmp$Site.y=="O"){
+    MapleOralsamplesselectvector[i]<-count
+  }
+}
+
+MapleOralsamplesselectvector<-na.omit(MapleOralsamplesselectvector)
+MapleOralsamplesselectvector<-as.vector(MapleOralsamplesselectvector)
+MapleOralsamplesselectvector<-MapleOralsamplesselectvector[-1]
+MapleOralsamplesselectvector<-as.numeric(MapleOralsamplesselectvector)
+
+#Distances Young Fecal to Oral samples
+DYdists<-Allsamplesunifracm[FecalYoungAgeselectvector,MapleOralsamplesselectvector]
+DYdistsmean<-rowMeans(DYdists)
+DYdists<-as.data.frame(DYdistsmean)
+DYdists$Group<-"Young_Samples_(<55yrs)"
+colnames(DYdists)[1]<-"Wunifrac_Distance_Means"
+DOdists<-Allsamplesunifracm[FecalOldAgeselectvector,MapleOralsamplesselectvector]
+DOdistsmean<-rowMeans(DOdists)
+DOdists<-as.data.frame(DOdistsmean)
+DOdists$Group<-"Older_Samples_(>55yrs)"
+colnames(DOdists)[1]<-"Wunifrac_Distance_Means"
+Alldists<-rbind(DYdists,DOdists)
+
+dists<-ggplot(Alldists,aes(x=Group,y=Wunifrac_Distance_Means))+geom_boxplot()
+wilcox.exact(Alldists$Wunifrac_Distance_Means~Alldists$Group)
+wc<-wilcox.exact(Alldists$Wunifrac_Distance_Means~Alldists$Group)
+
+
+```
+
+
+
+#Demographic Differences
+
+```{r}
+ad2<-adonis2(Allsamplesunifrac~BatchSite+Age+Sex+Race, data=meta,permutations=perm)
+```
+
+
+#Summarize Time points for each patient
+```{r}
+metadata<-meta(psall)
+#Oral data LRTI
+metao<-subset(metadata,Batch=="1")
+m<-sanitizer3(metao)
+tab<-m%>%group_by(city,Patient)%>%tally()
+tab
+```
+
+
+#Figure 2 Differences in taxonomy between DRDR and LRTI samples
+```{r Ancom control and maple}
+psO<-subset_samples(psageadjusted, Site.y=="O")
+ps_rarefamily<-psO %>%
+  tax_glom(taxrank = "Family") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-psO %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+meta<-sample_data(ps_rarefamily)
+Metasimple<-as.data.frame(meta[,c(1,3,45)])
+OTUs<-t(otu_table(ps_rarefamily))
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+colnames(OTUs)<-taxlist
+write.csv(OTUs, "~/Desktop/tmp1.txt")
+write.csv(Metasimple, "~/Desktop/tmp2.txt")
+OTU<-read.csv("~/Desktop/tmp1.txt",header=TRUE)
+#OTU<-OTU[,-c(1:2)]
+META<-read.csv("~/Desktop/tmp2.txt",header=TRUE)
+colnames(META)[1]<-"Sample.ID"
+colnames(OTU)[1]<-"Sample.ID"
+longitudinal_comparison_test=ANCOM.main(OTUdat=OTU,
+                                        Vardat=META,
+                                        adjusted=FALSE,
+                                        repeated=FALSE,
+                                        main.var="Batch",
+                                        adj.formula=NULL,
+                                        repeat.var="Patient",
+                                        longitudinal=FALSE,
+                                        random.formula="~1|Patient",
+                                        multcorr=1,
+                                        sig=0.01,
+                                        prev.cut=0.90)
+ancomtaxa<-longitudinal_comparison_test$W.taxa$otu.names
+selectedtaxa<-as.vector(ancomtaxa[1:20])
+OTUrelative<-as.data.frame(t(otu_table(ps_rarefamilyrelative)))
+taxlist<-gsub("\\[","",taxlist)
+taxlist<-gsub("\\]","",taxlist)
+taxlist<-gsub("\\-","",taxlist)
+
+selectedtaxa<-gsub("X\\.","",selectedtaxa)
+selectedtaxa<-gsub("\\.","",selectedtaxa)
+selectedtaxa<-gsub("\\-","",selectedtaxa)
+colnames(OTUrelative)<-taxlist
+Relativetaxa<-OTUrelative[,selectedtaxa]
+Alltaxa<-cbind(meta,Relativetaxa)
+melted<-melt(Alltaxa, id.vars=colnames(Alltaxa)[1:80])
+melted$Batch<-factor(melted$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+A<-ggplot(melted, aes(x=Batch,y=value,fill=Batch))+geom_jitter(width=0.1,size=0.5)+facet_wrap(~variable, scales="free")+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1),strip.text.x =element_text(size = 6))+theme_bw()+ggtitle("B")+ylab("Relative Abundance")+xlab(NULL)
+#ggsave(plot=taxaCompare,file="/Users/rogersm/Documents/MAPLE/FinalFigs/Mapletaxa.pdf",width=11,height=8.5)
+selecthigher<-c("Odoribacteraceae","Bacteroidaceae","Enterobacteriaceae","Ruminococcaceae","Christensenellaceae","Alcaligenaceae","Bacillaceae","Rikenellaceae","Tissierellaceae","Desulfovibrionaceae","Lachnospiraceae","Barnesiellaceae","Verrucomicrobiaceae","Porphyromonadaceae","Clostridiaceae","Pseudomonadaceae")
+selectall<-c("Spirochaetaceae","Streptococcaceae","Pasteurellaceae","Neisseriaceae","Fusobacteriaceae")
+selectlower<-c("Micrococcaceae","Coriobacteriaceae","Actinomycetaceae","Campylobacteraceae")
+Relativetaxa<-OTUrelative[,selectall]
+Alltaxa<-cbind(meta,Relativetaxa)
+melted<-melt(Alltaxa, id.vars=colnames(Alltaxa)[1:80])
+melted$Batch<-factor(melted$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+all<-ggplot(melted, aes(x=Batch,y=value,fill=Batch))+geom_jitter(width=0.1,size=0.5)+facet_wrap(~variable, scales="free",ncol=5)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1),,strip.text.x =element_text(size = 6))+theme_bw()+ggtitle("A")+ylab("Relative Abundance")+xlab(NULL)
+highertaxa<-OTUrelative[,selecthigher]
+Alltaxa<-cbind(meta,highertaxa)
+melted<-melt(Alltaxa, id.vars=colnames(Alltaxa)[1:80])
+melted$Batch<-factor(melted$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+higher<-ggplot(melted, aes(x=Batch,y=value,fill=Batch))+geom_jitter(width=0.1,size=0.5)+facet_wrap(~variable, scales="free",ncol=5)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1),,strip.text.x =element_text(size = 6))+theme_bw()+ggtitle("B")+ylab("Relative Abundance")+xlab(NULL)
+lowertaxa<-OTUrelative[,selectlower]
+Alltaxa<-cbind(meta,lowertaxa)
+melted<-melt(Alltaxa, id.vars=colnames(Alltaxa)[1:80])
+melted$Batch<-factor(melted$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+lower<-ggplot(melted, aes(x=Batch,y=value,fill=Batch))+geom_jitter(width=0.1,size=0.5)+facet_wrap(~variable, scales="free",ncol=5)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1),,strip.text.x =element_text(size = 6))+theme_bw()+ggtitle("C")+ylab("Relative Abundance")+xlab(NULL)
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Taxadrdrancom.pdf",width=8.5,height=11,useDingbats = FALSE)
+grid.arrange(all,higher,lower,layout_matrix=rbind(c(1,1),c(2,2),c(2,2),c(2,2),c(3,3)),nrow=5)
+dev.off()
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/Fig2.pdf",width=8.5,height=11,useDingbats = FALSE)
+grid.arrange(all,higher,lower,layout_matrix=rbind(c(1,1),c(2,2),c(2,2),c(2,2),c(3,3)),nrow=5)
+dev.off()
+
+```
+
+
+#Fig3 ADONIS2 multivariable comparison of clinical variables - Saliva samples; 
+
+```{r}
+psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+ord <- ordinate(psall_time, "MDS", "wunifrac")
+meta<-meta(psall_time)
+#meta<-as.matrix(meta)
+#meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+#testthese<-colnames(metas)
+All<-cbind(metas,ord$vectors)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in 2:dim(metas)[2]){
+varname<-colnames(metas[x])
+print(varname)
+}
+m<-meta(psall_time)
+metadata<-sanitizer3(m)
+sample_data(psall_time)<-metadata
+metadata<-meta(psall_time)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Race+Sex+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=TRUE)
+
+ad_withstrata<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Race+Sex+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations=perm,na.rm=TRUE)
+
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomenostrata<-adonis2(Allsamplesunifrac~city+OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,perm=9999,na.rm=TRUE)
+outcomestrata<-adonis2(Allsamplesunifrac~OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+kable(ad_nostrata,format="pipe")
+outcomenostratainteractions<-adonis2(Allsamplesunifrac~OUTCOME_COPD*OUTCOME_Asthma*OUTCOME_CAP*OUTCOME_Asthma*OUTCOME_Acute_Bronchitis*Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+
+```
+
+#Fig3 PcoA plots of significant variables 
+```{r}
+tests<-list("")
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+metadata<-meta(psall_time)
+metas<-metadata
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+perm <- how(nperm = 999)
+setBlocks(perm) <- with(metadata, city)
+for (x in c(13,14,16:39,54:56,58:65,79)){
+varname<-colnames(metas[x])
+print(varname)
+#ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+ad2<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = perm,na.rm=TRUE)
+mod<-betadisper(Allsamplesunifrac, metas[,x], type="centroid")
+an<-anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+ordplot<-plot(mod.HSD)
+var<-paste0(varname)
+ano<-anosim(Allsamplesunifrac, metas[,x])
+#q<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=varname))+geom_point()+theme_classic()+stat_ellipse()
+tests[[varname]]<-list(name=varname,dispersion=mod,anova=an,permuttest=pmod,mod.HSD=mod.HSD,anos=ano,adonis2=ad2)
+}
+```
+
+
+#Fig3 PcoA plots of significant variables continued
+```{r}
+pdf("~/MAPLE/Maplevarsordinations.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis2"]]$`R2`[1]>0.0001)&(tests[[i]][["adonis2"]]$`Pr(>F)`[1]<0.50)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis2"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis2"]][1:3]
+  pv<-tests[[i]][["adonis2"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis2"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis2"]]$`R2`[1]>0.00001)&(tests[[i]][["adonis2"]]$`Pr(>F)`[1]<0.50)){
+  #print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+  j<-paste(tests[[i]][["name"]],tests[[i]][["adonis2"]]$`R2`[1],tests[[i]][["adonis2"]]$F[1],tests[[i]][["adonis2"]]$`Pr(>F)`[1],sep=" ")
+  print(j)
+}
+}
+
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("OUTCOME_COPD","COPD_Hx")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point()+geom_point(data=cents,size=5)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))+xlab("PCoA1 (23.5%)")+ylab("PCoA2 (17.14)")
+}
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Fig3.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(plotlist[[2]])
+dev.off()
+```
+
+
+
+#Table S1H- Adonis2 comparisons of clinical metadata using baseline fecal samples
+
+```{r}
+psall_time<-subset_samples(ps_rare, Site.y=="F"&Batch=="1"&Site.x!="NA"&Time==1)
+#psall_time<-subset_samples(psall_time, city=="Pittsburgh")
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+ord <- ordinate(psall_time, "MDS", "wunifrac")
+meta<-meta(psall_time)
+#meta<-as.matrix(meta)
+#meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+#testthese<-colnames(metas)
+All<-cbind(metas,ord$vectors)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in 2:dim(metas)[2]){
+varname<-colnames(metas[x])
+print(varname)
+}
+m<-meta(psall_time)
+metadata<-sanitizer3(m)
+sample_data(psall_time)<-metadata
+metadata<-meta(psall_time)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Sex+Race+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 9999,na.rm=TRUE)
+
+#ad_withstrata<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Sex+Race+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations=perm,na.rm=TRUE)
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomeadstrata<-adonis2(Allsamplesunifrac~city+OUTCOME_COPD+OUTCOME_CAP+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,perm=perm,na.rm=TRUE)
+outcomenostrata<-adonis2(Allsamplesunifrac~OUTCOME_COPD+OUTCOME_CAP+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+
+kable(ad_nostrata,format="pipe")
+```
+
+
+
+#Figure 4 - Differentially abundant COPD history and COPD exacerbation, all time points, adjust by city
+
+```{r Ancom Saliva variables}
+tests<-as.list("")
+gplotlist<-as.list("")
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA")
+ps_rarefamily<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+OTUs<-t(otu_table(ps_rarefamily))
+colnames(OTUs)<-taxlist
+meta<-meta(ps_rarefamily)
+meta<-sanitizer2(meta)
+OTUrelative<-t(otu_table(ps_rarefamilyrelative))
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+colnames(OTUs)<-taxlist
+write.csv(OTUs, "~/Desktop/tmp1.txt")
+write.csv(meta, "~/Desktop/tmp2.txt")
+OTU<-read.csv("~/Desktop/tmp1.txt",header=TRUE)
+#OTU<-OTU[,-c(1:2)]
+META<-read.csv("~/Desktop/tmp2.txt",header=TRUE)
+colnames(META)[1]<-"Sample.ID"
+colnames(OTU)[1]<-"Sample.ID"
+varnames<-c("COPD_Hx","OUTCOME_COPD")
+varancomlist<-list("")
+for (i in 1:length(varnames)){
+vn<-varnames[i]
+print(vn)
+longitudinal_comparison_test=ANCOM.main(OTUdat=OTU,
+                                        Vardat=META,
+                                        adjusted=TRUE,
+                                        repeated=FALSE,
+                                        main.var=vn,
+                                        adj.formula="city",
+                                        #repeat.var="Patient",
+                                        longitudinal=FALSE,
+                                        random.formula="~1|Patient",
+                                        multcorr=3,
+                                        sig=0.01,
+                                        prev.cut=0.90)
+ancomtaxa<-longitudinal_comparison_test$W.taxa
+anc<-subset(ancomtaxa,detected_0.7=="TRUE")
+varancomlist[[vn]]<-anc
+}
+
+
+OTUrelative<-as.data.frame(t(otu_table(ps_rarefamilyrelative)))
+taxlist<-gsub("\\[","",taxlist)
+taxlist<-gsub("\\]","",taxlist)
+colnames(OTUrelative)<-taxlist
+
+plotancom<-list("")
+for (i in 2:length(varancomlist)){
+    melted<-""
+    All<-""
+    a<-""
+    print(i)
+    j<-varancomlist[[i]]
+    varn<-names(varancomlist)[i]
+    taxa<-as.vector(j$otu.names)
+    taxa<-gsub("X\\.","",taxa)
+    taxa<-gsub("\\.","",taxa)
+    print(taxa)
+      if (length(taxa)>0){
+      OTUrelativeforplot<-OTUrelative[,taxa]
+      OTUrelativeforplot<-as.data.frame(OTUrelativeforplot)
+      colnames(OTUrelativeforplot)<-taxa
+      All<-cbind(meta,OTUrelativeforplot)
+    melted<-melt(All, id.vars=colnames(All)[1:80])
+    melted<-melted[,c("Sample_ID",varn,"variable","value")]
+    colnames(melted)<-c("Sample_ID","testvar","variable","value")
+    #melted<-melted[-grep("Unknown",melted$testvar),]
+    print(All)
+    print(melted)
+    melted$testvar<-as.vector(melted$testvar)
+    melted<-melted[melted$testvar!="Unknown",]
+    #a<-ggplot(melted,aes(x=melted[,2],y=value,fill=variable))+geom_boxplot()+ggtitle(paste0(varn))
+    plotancom[[varn]]<-melted
+  }
+  }
+
+plotancom<-plotancom[-1]
+#plotancom<-plotancom[lapply(plotancom,length)>0]
+library("cowplot")
+pl<-list("")
+tmp<-do.call(rbind,plotancom)
+tmp<-tmp[-1,]
+txs<-unique(tmp$variable)
+scolfill<-iwanthue(length(txs))
+names(scolfill)<-txs
+stuff<-ggplot(tmp, aes(x=testvar,y=value,fill=variable))+geom_boxplot()+scale_fill_manual(values=scolfill)+theme(legend.position = "bottom")
+legend<-get_legend(stuff)
+for (i in names(plotancom)){
+  print (i)
+  plotstuff<-plotancom[[i]]
+  pl[[i]]<-ggplot(plotstuff, aes(x=testvar,y=value,fill=variable))+geom_boxplot()+ggtitle(paste0(i))+scale_fill_manual(values=scolfill)+theme_bw()
+}
+
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/AncomSignificantOrallog.pdf",width=11,height=8.5,useDingbats = FALSE)
+grid.arrange(pl[["OUTCOME_COPD"]])
+dev.off()
+
+avgs1<-plotancom$COPD_Hx
+avgs2<-plotancom$OUTCOME_COPD
+
+COPDavgs<-avgs1%>%group_by(testvar,variable)%>%summarise(median(value))
+COPDoutcomeavgs<-avgs2%>%group_by(testvar,variable)%>%summarise(median(value))
+
+```
+
+
+##Figure 5 BDIV comparison between hospital sites and DRDR and stats also Table S1J
+```{r Beta diversity oral control and MAPLE}
+#MAPL-01-310237-O-2  MAPL-01-310237-O-3 
+ps_rare2<-subset_samples(ps_rare,Site.y=="O"&Patient!="NA")
+meta<-meta(ps_rare2)
+meta<-sanitizerReference(meta)
+Allsamplesunifrac<-UniFrac(ps_rare2,weighted=TRUE)
+ord <- ordinate(ps_rare2, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+scalecols<-iwanthue(n=11)
+bdiv$city<-factor(bdiv$city, levels=unique(bdiv$city))
+Batchcompare<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2,colour=Batch))+geom_point()+theme_classic()+scale_color_manual(values=scalecols)+ggtitle("PcoA Maple vs DRDR Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~city, data=meta,permutations = perm)
+mod<-betadisper(Allsamplesunifrac, meta$city, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$city<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+adonis2(Allsamplesunifrac~city,data=meta)
+scalecols<-iwanthue(length(unique(meta$city)))
+PCoAplotOralCities<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=city))+geom_point(data=metavecs)+geom_point(data=cents,size=5)+theme_classic()+scale_colour_manual(values=scalecols)
+PCoAplotOralb<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=city))+geom_point(data=metavecs,alpha=0.3)+geom_point(data=cents,size=5)+theme_classic()+scale_colour_manual(values=scalecols)
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/Fig5.pdf",width=11,height=8.5,useDingbats = FALSE)
+PCoAplotOralCities
+dev.off()
+#ggsave(file="~/Documents/MAPLE/FinalFigs/PCoAplotSitesdrdr.pdf",plot=PCoAplotOral,width=11,height=8.5,useDingbats=FALSE)
+j<-pairwise.adonis2(Allsamplesunifrac~city,data=meta)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp,"|",R,"|",P)
+  print(totes)
+}
+
+```
+
+
+#FigS1 ANCOM-BC Taxonomic differences compared against Pittsburgh LRTI
+```{r}
+newlist<-as.list("")
+guttaxa<-c("Lachnospiraceae","Bacteroidaceae","Verrucomicrobiaceae","Ruminococcaceae","Enterobacteriaceae","Rikenellaceae")
+oraltaxa<-c("Flavobacteriaceae","Porphyromonadaceae","Prevotellaceae","Leptotrichiaceae","Fusobacteriaceae","Neisseriaceae","Moraxellaceae","Alcaligenaceae","Burkholderiaceae","Pasteurellaceae","Spirochaetaceae","Mycoplasmataceae","Synergistaceae","Lactobacillaceae","Micrococcaceae","Streptococcaceae")
+Tim<-"1"
+Sits<-c("Columbus","Hershey","Detroit")
+pso<-subset_samples(psall, Site.y=="O"&Time==Tim&Batch==1)
+meta<-meta(pso)
+meta<-sanitizer3(meta)
+sample_data(pso)<-meta
+plots<-as.list("")
+for (l in 1:length(Sits)){
+print(l)
+s<-Sits[l]
+psositecompare<-subset_samples(pso, (city==s|city=="Pittsburgh"))
+meta_data<-meta(psositecompare)
+titlelist<-list("")
+countlist<-as.list("")
+psofamily<-psositecompare %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+psofamilyrelative<-psositecompare %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxlist<-tax_table(psofamily)
+taxlist<-taxlist[,5]
+taxlist<-as.data.frame(taxlist)
+taxlist<-as.vector(taxlist)
+n_taxa = ntaxa(psofamily)
+n_samp = nsamples(psofamily)
+taxonomy = tax_table(psofamily)
+otun<-rownames(taxonomy)
+otufamily<-taxonomy[,5]
+otugenus<-taxonomy[,6]
+nfamilygenus<-cbind(otun,otufamily,otugenus)
+rowns<-paste0(otufamily,"_",otugenus,"_",otun)
+# Absolute abundances
+otu_absolute = abundances(psofamily)
+rownames(otu_absolute)<-taxlist[,1]
+otu_relative = abundances(psofamilyrelative)
+rownames(otu_relative)<-taxlist[,1]
+otu_means<-rowMeans(otu_relative)
+otu_means<-as.data.frame(otu_means)
+otumeans<-cbind(rownames(otu_means),otu_means)
+colnames(otumeans)[1]<-"taxon"
+rownames(otu_relative)<-taxlist[,1]
+rownames(otu_absolute)<-taxlist[,1]
+# Pre-processing
+res<-""
+res2<-""
+feature.table = otu_absolute; sample.var = "Sample_ID"; group.var="city"; 
+zero.cut = 0.90; lib.cut = 1000; neg.lb = TRUE
+pre.process = feature_table_pre_process(feature.table, meta_data, sample.var, 
+                                        group.var, zero.cut, lib.cut, neg.lb)
+feature.table = pre.process$feature.table
+group.name = pre.process$group.name
+group.ind = pre.process$group.ind
+struc.zero = pre.process$structure.zeros
+
+
+# Paras for ANCOM-BC
+grp.name = group.name; grp.ind = group.ind; adj.method = "bonferroni"
+tol.EM = 1e-5; max.iterNum = 100; perNum = 1000; alpha = 0.01
+
+out = ANCOM_BC(feature.table, grp.name, grp.ind, struc.zero,
+               adj.method, tol.EM, max.iterNum, perNum, alpha)
+res = cbind(taxon = rownames(out$feature.table), out$res)
+rownames(res)<-res$taxon
+resabs<-left_join(res, otumeans, by.id="taxon")
+#otu_means2[otu_means2$MeanRelativeAbundance==0]<-1.131222e-07
+res<-resabs
+tax<-res$taxon
+resnamed<-res[res$diff.abn=="TRUE",]
+resnamed$label<-resnamed$taxon
+resnotnamed<-res[res$diff.abn=="FALSE",]
+resnotnamed$label<-""
+res$type<-""
+All<-rbind(resnamed,resnotnamed)
+res<-All
+guttype<-res[res$taxon%in%guttaxa,]
+guttype$type<-"gut"
+oraltype<-res[res$taxon%in%oraltaxa,]
+oraltype$type<-"oral"
+notype<-res[!((res$taxon%in%oraltaxa)|(res$taxon%in%guttaxa)),]
+notype$type<-"unknown"
+All<-rbind(guttype,oraltype,notype)
+res<-All
+vec<-colnames(res)
+rmv<-grep('se',vec)
+res2<-res[,-c(rmv)]
+if (colnames(res2)[2]=="mean.difference (Pittsburgh - Columbus)"){
+  colnames(res2)[2]="mean.difference (Columbus - Pittsburgh)"
+  res2[2]=res2[2] * -1
+}
+res2$q.val[res2$q.val==0.000]<-0.001
+title<-paste0(s," Comparison")
+melted<-melt(res2, id.vars=c("taxon","W","p.val","q.val","diff.abn","otu_means","label","type"))
+a<-ggplot(melted, aes(x=value, y=-log(q.val),label=label,colour=type))+geom_point(aes(size=otu_means,alpha=0.5))+geom_text_repel(size=3,segment.size = 0.2)+facet_wrap(~variable,ncol=3)+ggtitle(title)+scale_color_manual(values=c("red","blue","grey"))+geom_vline(xintercept = 0,linetype=2)+theme_classic()+xlim(-4,4)+xlab("Log Differential Abundance")
+newlist[[s]]<- list(a,res2)
+plots[[s]]<-a
+}
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/FigS1.pdf",width=11,height=8.5,useDingbats = FALSE)
+grid.arrange(plots[[2]],plots[[3]],plots[[4]])
+dev.off()
+```
+
+#Fig S2 All compared against Pittsburgh Reference
+```{r}
+newlist<-as.list("")
+Tim<-"1"
+Sits<-c("Columbus","Hershey","Detroit","Pittsburgh")
+pso<-subset_samples(psall, Site.y=="O"&Time==Tim)
+meta<-meta(pso)
+meta<-sanitizerReference(meta)
+rownames(meta)<-meta$Sample_ID
+sample_data(pso)<-meta
+plots<-as.list("")
+for (l in 1:length(Sits)){
+print(l)
+s<-Sits[l]
+psositecompare<-subset_samples(pso, (city==s|city=="DRDR"))
+meta_data<-meta(psositecompare)
+titlelist<-list("")
+countlist<-as.list("")
+psofamily<-psositecompare %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+psofamilyrelative<-psositecompare %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxlist<-tax_table(psofamily)
+taxlist<-taxlist[,5]
+taxlist<-as.data.frame(taxlist)
+taxlist<-as.vector(taxlist)
+n_taxa = ntaxa(psofamily)
+n_samp = nsamples(psofamily)
+taxonomy = tax_table(psofamily)
+otun<-rownames(taxonomy)
+otufamily<-taxonomy[,5]
+otugenus<-taxonomy[,6]
+nfamilygenus<-cbind(otun,otufamily,otugenus)
+rowns<-paste0(otufamily,"_",otugenus,"_",otun)
+# Absolute abundances
+otu_absolute = abundances(psofamily)
+rownames(otu_absolute)<-taxlist[,1]
+otu_relative = abundances(psofamilyrelative)
+rownames(otu_relative)<-taxlist[,1]
+otu_means<-rowMeans(otu_relative)
+otu_means<-as.data.frame(otu_means)
+otumeans<-cbind(rownames(otu_means),otu_means)
+colnames(otumeans)[1]<-"taxon"
+rownames(otu_relative)<-taxlist[,1]
+rownames(otu_absolute)<-taxlist[,1]
+# Pre-processing
+res<-""
+res2<-""
+feature.table = otu_absolute; sample.var = "Sample_ID"; group.var="city"; 
+zero.cut = 0.90; lib.cut = 1000; neg.lb = TRUE
+pre.process = feature_table_pre_process(feature.table, meta_data, sample.var, 
+                                        group.var, zero.cut, lib.cut, neg.lb)
+feature.table = pre.process$feature.table
+group.name = pre.process$group.name
+group.ind = pre.process$group.ind
+struc.zero = pre.process$structure.zeros
+
+
+# Paras for ANCOM-BC
+grp.name = group.name; grp.ind = group.ind; adj.method = "bonferroni"
+tol.EM = 1e-5; max.iterNum = 100; perNum = 1000; alpha = 0.01
+
+out = ANCOM_BC(feature.table, grp.name, grp.ind, struc.zero,
+               adj.method, tol.EM, max.iterNum, perNum, alpha)
+res = cbind(taxon = rownames(out$feature.table), out$res)
+rownames(res)<-res$taxon
+resabs<-left_join(res, otumeans, by.id="taxon")
+#otu_means2[otu_means2$MeanRelativeAbundance==0]<-1.131222e-07
+res<-resabs
+tax<-res$taxon
+resnamed<-res[res$diff.abn=="TRUE",]
+resnamed$label<-resnamed$taxon
+resnotnamed<-res[res$diff.abn=="FALSE",]
+resnotnamed$label<-""
+res$type<-""
+All<-rbind(resnamed,resnotnamed)
+res<-All
+guttype<-res[res$taxon%in%guttaxa,]
+guttype$type<-"gut"
+oraltype<-res[res$taxon%in%oraltaxa,]
+oraltype$type<-"oral"
+notype<-res[!((res$taxon%in%oraltaxa)|(res$taxon%in%guttaxa)),]
+notype$type<-"unknown"
+All<-rbind(guttype,oraltype,notype)
+res<-All
+vec<-colnames(res)
+rmv<-grep('se',vec)
+res2<-res[,-c(rmv)]
+if (colnames(res2)[2]=="mean.difference (Pittsburgh - Columbus)"){
+  colnames(res2)[2]="mean.difference (Columbus - Pittsburgh)"
+  res2[2]=res2[2] * -1
+}
+res2$q.val[res2$q.val==0.000]<-0.001
+title<-paste0(s," Comparison")
+melted<-melt(res2, id.vars=c("taxon","W","p.val","q.val","diff.abn","otu_means","label","type"))
+a<-ggplot(melted, aes(x=value, y=-log(q.val),label=label,colour=type))+geom_point(aes(size=otu_means,alpha=0.5))+geom_text_repel(size=3,segment.size = 0.2)+facet_wrap(~variable,ncol=3)+ggtitle(title)+scale_color_manual(values=c("red","blue","grey"))+geom_vline(xintercept = 0,linetype=2)+theme_classic()+xlim(-4,4)+xlab("Log Differential Abundance")
+newlist[[s]]<- list(a,res2)
+plots[[s]]<-a
+}
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/FigS2.pdf",width=11,height=8.5,useDingbats = FALSE)
+grid.arrange(plots[[2]],plots[[3]],plots[[4]],plots[[5]])
+dev.off()
+```
+
+#City Alpha Diversity Table S1K
+```{r}
+meta<-sample_data(ps_rare)
+meta<-sanitizerReference(meta)
+alpha<-estimate_richness(ps_rare)
+All<-cbind(meta,alpha)
+b<-ggplot(All, aes(x=city, y=Shannon))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme(axis.text = element_text(angle=90,hjust=1))+theme_classic()+xlab("Site")+ylab("Alpha Diversity")
+h<-pairwise.wilcox.test(All$Shannon,All$city)
+kable(h$p.value,format="pipe")
+
+#Adonis divide cohorts into asthma and COPD - perform some tests.
+
+```
+
+
+
+#Table S1K Calculate Chisquared values and ratios for Independence testing vs Hospital site
+```{r}
+metasforcorr<-read.csv("/Users/rogersm/MapleFigs/Totallyfinalfiles/metas.csv")
+metasforcorr2<-metasforcorr[metasforcorr$Sample_ID%in%metadata$Sample_ID,]
+metasforcorr2$city<-metadata$city
+ratiolist<-list("")
+chilist<-list("")
+
+for (i in 2:29){
+  nm<-colnames(metasforcorr2)[i]
+  print(metasforcorr2[,i])
+  v<-table(metasforcorr2[,i],metasforcorr2$city)
+  vr<-(v[2,]/(v[2,]+v[1,]))
+  ratiolist[[nm]]<-vr
+  chilist[[nm]]<-chisq.test(metasforcorr2[,i],metasforcorr2$city)
+}
+chilist<-chilist[-1]
+sigvec<-as.vector("")
+h=0
+for (i in names(chilist)){
+  #print(i)
+  j<-chilist[[i]]$p.value*29
+  if (j < 0.05){
+    h=h+1
+    print(i)
+    print(chilist[[i]])
+    j<-format(j,scientific = TRUE)
+    print(j)
+    sigvec[h]<-i
+  }
+}
+
+Finaldf<-do.call(rbind,ratiolist)
+Finaldf<-Finaldf[-1,]
+Finaldf2<-apply(Finaldf,2,function(x) as.numeric(x))
+rownames(Finaldf2)<-rownames(Finaldf)
+Finaldf3<-Finaldf2[sigvec,]
+```
+
+#FigS3 Generate Correllogram
+
+```{r}
+#Investigate Site metadata associations
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+meta<-meta(pstime1)
+write.csv(meta,"~/Desktop/metas.txt")
+
+metasforcorr<-read.csv("/Users/rogersm/MapleFigs/Totallyfinalfiles/metas.csv")
+metasforcorr<-metasforcorr[,-24]
+rownames(metasforcorr)<-metasforcorr[,1]
+metasforcorr<-metasforcorr[,-1]
+metasforcorr[is.na(metasforcorr)] <- 0
+metasforcorr2<-apply(metasforcorr,2,function(x) as.numeric(x))
+res <- cor(metasforcorr2)
+round(res, 2)
+
+cor(metasforcorr2, use = "complete.obs")
+res2 <- rcorr(as.matrix(metasforcorr2))
+res2$r
+# Extract p-values
+res2$P
+
+library(corrplot)
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/Sendout/BMCSubmit/Resubmission/FigS3.pdf",width=11,height=8.5,useDingbats = FALSE)
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+dev.off()
+```
+
+#Asthma subpopulation
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+meta<-meta(psall_time)
+metas<-sanitizer3(meta)
+metas$Subject_ID<-as.factor(as.character(metas$Subject_ID))
+sample_data(psall_time)<-metas
+metadata<-meta(psall_time)
+metadataseverity<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=2)
+colnames(metadataseverity)[1]<-"Subject_ID"
+metadata<-left_join(metas,metadataseverity,by="Subject_ID")
+rownames(metadata)<-metadata[,1]
+sample_data(psall_time)<-metadata
+
+psall_asthma<-subset_samples(psall_time, Site.y=="O"&Batch=="1"&Site.x!="NA"&Asthma_Hx=="Yes")
+Allsamplesunifrac<-UniFrac(psall_asthma,weighted=TRUE)
+ord <- ordinate(psall_asthma, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+meta<-meta(psall_asthma)
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+#bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+#bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+bdiv$com_history_asthma_severity<-factor(bdiv$com_history_asthma_severity, levels=c(1,2,3,4),labels=c("Mild","Moderate","Severe","Unknown"))
+metadata<-meta
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+AsthmaOrdinate<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=as.factor(com_history_asthma_severity)))+geom_point()+theme_classic()+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+facet_grid(~city)
+
+
+ad2<-adonis2(Allsamplesunifrac~com_history_asthma_severity, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, as.factor(meta$com_history_asthma_severity), type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+meta$com_history_asthma_severity<-factor(meta$com_history_asthma_severity, levels=unique(meta$com_history_asthma_severity))
+j<-pairwise.adonis2(Allsamplesunifrac~com_history_asthma_severity,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+Sex+Race+COPD_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=TRUE)
+
+ad_withstrata<-adonis2(Allsamplesunifrac~Sex+Race+COPD_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations=perm,na.rm=TRUE)
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomeadstrata<-adonis2(Allsamplesunifrac~Age+OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,perm=perm,na.rm=TRUE)
+outcomenostrata<-adonis2(Allsamplesunifrac~city+OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+
+kable(ad_nostrata,format="pipe")
+```
+
+#COPD subpopulation
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+meta<-meta(psall_time)
+metas<-sanitizer3(meta)
+metas$Subject_ID<-as.factor(as.character(metas$Subject_ID))
+sample_data(psall_time)<-metas
+metadata<-meta(psall_time)
+metadataseverity<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=2)
+colnames(metadataseverity)[1]<-"Subject_ID"
+metadata<-left_join(metas,metadataseverity,by="Subject_ID")
+rownames(metadata)<-metadata[,1]
+sample_data(psall_time)<-metadata
+
+psall_COPD<-subset_samples(psall_time, Site.y=="O"&Batch=="1"&Site.x!="NA"&COPD_Hx=="Yes")
+Allsamplesunifrac<-UniFrac(psall_COPD,weighted=TRUE)
+ord <- ordinate(psall_COPD, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+meta<-meta(psall_COPD)
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+#bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+#bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+bdiv$com_history_copd_severity<-factor(bdiv$com_history_copd_severity, levels=c(1,2,3,4),labels=c("Mild","Moderate","Severe","Unknown"))
+metadata<-meta
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+COPDOrdinate<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=as.factor(com_history_copd_severity)))+geom_point()+theme_classic()+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()+facet_grid(~city)
+
+ad2<-adonis2(Allsamplesunifrac~com_history_asthma_severity, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, as.factor(meta$com_history_asthma_severity), type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+meta$com_history_asthma_severity<-factor(meta$com_history_asthma_severity, levels=unique(meta$com_history_asthma_severity))
+j<-pairwise.adonis2(Allsamplesunifrac~com_history_asthma_severity*city,data=meta,nperm=9999)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+Sex+Race+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=TRUE)
+
+ad_withstrata<-adonis2(Allsamplesunifrac~Sex+Race+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations=perm,na.rm=TRUE)
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomeadstrata<-adonis2(Allsamplesunifrac~OUTCOME_CAP+OUTCOME_Asthma+Overall_Adverse_outcome,data=metadata,perm=perm,na.rm=TRUE)
+outcomenostrata<-adonis2(Allsamplesunifrac~city+OUTCOME_CAP+OUTCOME_Asthma+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+
+kable(ad_nostrata,format="pipe")
+```
+
+
+
+
+##Bdiv, just DRDR and MAPLE - not included in manuscript
+```{r Beta diversity oral control and MAPLE}
+meta<-sample_data(ps_rare)
+Allsamplesunifrac<-phyloseq::distance(ps_rare,method="wunifrac")
+# proj <- get_ordination(pseq, "MDS", "bray")
+ord <- ordinate(ps_rare, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite,shape=Time))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs DRDR Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+ad<-adonis(Allsamplesunifrac~BatchSite, data=meta,permutations=9999)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+PCoAplotOral<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=BatchSite))+geom_point(data=metavecs)+geom_point(data=cents,size=5)+theme_classic()
+#ggsave(file="/Users/rogersm/MapleFigs/Totallyfinalfiles/PCoAplotMaplevDRDR.pdf",plot=PCoAplotOral,width=11,height=8.5,useDingbats=FALSE)
+
+```
+
+
+#PcoA plots of significant variables Fecal sample
+```{r}
+Allsamplesunifrac<-phyloseq::distance(psall_time,method="wunifrac")
+metadata<-meta(psall_time)
+metas<-metadata
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in c(13,14,16:39,54:56,58:65,80)){
+varname<-colnames(metas[x])
+print(varname)
+ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+ad2<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+mod<-betadisper(Allsamplesunifrac, metas[,x], type="centroid")
+an<-anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+ordplot<-plot(mod.HSD)
+var<-paste0(varname)
+ano<-anosim(Allsamplesunifrac, metas[,x])
+#q<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=varname))+geom_point()+theme_classic()+stat_ellipse()
+tests[[varname]]<-list(name=varname,adonis=ad,dispersion=mod,anova=an,permuttest=pmod,mod.HSD=mod.HSD,anos=ano,adonis2=ad2)
+}
+```
+
+
+```{r}
+pdf("~/MAPLE/Maplevarsordinations.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.0001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis"]][1:3]
+  pv<-tests[[i]][["adonis"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.00001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.10)){
+  #print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+  j<-paste(tests[[i]][["name"]],tests[[i]][["adonis"]]$`R2`[1],tests[[i]][["adonis"]]$F[1],tests[[i]][["adonis"]]$`Pr(>F)`[1],sep=" ")
+  print(j)
+}
+}
+
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("COPD_Hx","Asthma_Hx","OUTCOME_CAP")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point()+geom_point(data=cents,size=5)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))+xlab("PCoA1 (23.5%)")+ylab("PCoA2 (17.14)")
+}
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/FecalPcoA.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(plotlist[[2]],plotlist[[3]],plotlist[[4]])
+dev.off()
+```
+
+
+#Significant difference in Alpha diversity by Clinical populations?
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+ps_rare<-rarefy_even_depth(psall_time,rng=111)
+#Allsamplesunifrac<-phyloseq::distance(ps_rare,method="wunifrac")
+alpha<-estimate_richness(ps_rare)
+set.seed(4235421)
+meta<-sample_data(ps_rare)
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+#Alphameta<-cbind(metas, alpha)
+metas2<-metas[,c(5:33,35:42)]
+Alphameta<-cbind(metas2, alpha)
+for (x in 1:dim(metas2)[2]){
+varname<-colnames(metas2[x])
+print(varname)
+#print(x)
+j<-pairwise.wilcox.test(Alphameta$Shannon,Alphameta[,x])
+print(j)
+k<-j$p.value
+l<-k["Yes","No"]
+#print(l)
+if (l < 0.05){
+  print (varname)
+}
+}
+steroidplot<-ggplot(Alphameta, aes(x=OUTCOME_COPD, y=Chao1))+geom_boxplot()
+Coughplot<-ggplot(Alphameta, aes(x=Cough, y=Chao1))+geom_boxplot()
+Chillplot<-ggplot(Alphameta, aes(x=Chills, y=Chao1))+geom_boxplot()
+CAPplot<-ggplot(Alphameta, aes(x=OUTCOME_CAP, y=Chao1))+geom_boxplot()
+}
+pdf("/Users/rogersm/Documents/MAPLE/FinalFigs/SigAlpha.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(steroidplot,Coughplot,Chillplot,CAPplot)
+dev.off()
+
+
+#metavecsalpha<-cbind(metavecs,alpha)
+#steroidplotalphaPCOA<-ggplot(metavecsalpha,aes(x=PCoA1,y=PCoA2,colour=Chao1, shape=ED_steroids))+geom_point(size=4)+scale_colour_distiller(palette="RdBu")+scale_shape_manual(values=c(16,18))+stat_ellipse()
+#CAPplotalphaPCOA<-ggplot(metavecsalpha,aes(x=PCoA1,y=PCoA2,colour=Chao1, shape=OUTCOME_CAP))+geom_point(size=4)+scale_colour_distiller(palette="YlOrBr")+scale_shape_manual(values=c(16,18,1))+stat_ellipse()
+
+```
+
+
+
+#ANCOM-BC of variables
+
+```{r}
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+metadata<-meta(pstime1)
+metadata<-sanitizer2(metadata)
+sample_data(pstime1)<-metadata
+tests<-as.list("")
+gplotlist<-as.list("")
+pstime1<-subset_samples(pstime1, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1&city=="Pittsburgh")
+ps_rarefamily<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+OTUs<-t(otu_table(ps_rarefamily))
+colnames(OTUs)<-taxlist
+meta<-meta(ps_rarefamily)
+OTUrelative<-t(otu_table(ps_rarefamilyrelative))
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+colnames(OTUs)<-taxlist
+taxlist<-tax_table(ps_rarefamily)
+taxlist<-taxlist[,5]
+taxlist<-as.data.frame(taxlist)
+taxlist<-as.vector(taxlist)
+n_taxa = ntaxa(ps_rarefamily)
+n_samp = nsamples(ps_rarefamily)
+# Metadata
+meta_data<-meta
+# Taxonomy table
+taxonomy = tax_table(ps_rarefamily)
+otun<-rownames(taxonomy)
+otufamily<-taxonomy[,5]
+otugenus<-taxonomy[,6]
+nfamilygenus<-cbind(otun,otufamily,otugenus)
+rowns<-paste0(otufamily,"_",otugenus,"_",otun)
+# Absolute abundances
+otu_absolute = abundances(ps_rarefamily)
+rownames(otu_absolute)<-taxlist[,1]
+otu_relative = abundances(ps_rarefamilyrelative)
+rownames(otu_relative)<-taxlist[,1]
+otu_means<-rowMeans(otu_relative)
+otu_means<-as.data.frame(otu_means)
+otumeans<-cbind(rownames(otu_means),otu_means)
+colnames(otumeans)[1]<-"taxon"
+rownames(otu_relative)<-taxlist[,1]
+rownames(otu_absolute)<-taxlist[,1]
+# Pre-processing
+feature.table = otu_absolute; sample.var = "Sample_ID"; group.var = "CorticosteroidsOral"; 
+zero.cut = 0.90; lib.cut = 1000; neg.lb = TRUE
+pre.process = feature_table_pre_process(feature.table, meta_data, sample.var, 
+                                        group.var, zero.cut, lib.cut, neg.lb)
+feature.table = pre.process$feature.table
+group.name = pre.process$group.name
+group.ind = pre.process$group.ind
+struc.zero = pre.process$structure.zeros
+
+
+# Paras for ANCOM-BC
+grp.name = group.name; grp.ind = group.ind; adj.method = "bonferroni"
+tol.EM = 1e-5; max.iterNum = 100; perNum = 1000; alpha = 0.05
+
+out = ANCOM_BC(feature.table, grp.name, grp.ind, struc.zero,
+               adj.method, tol.EM, max.iterNum, perNum, alpha)
+res = cbind(taxon = rownames(out$feature.table), out$res)
+rownames(res)<-res$taxon
+resabs<-left_join(res, otumeans, by.id="taxon")
+#otu_means2[otu_means2$MeanRelativeAbundance==0]<-1.131222e-07
+res<-resabs
+tax<-res$taxon
+resnamed<-res[res$diff.abn=="TRUE",]
+resnamed$label<-resnamed$taxon
+resnotnamed<-res[res$diff.abn=="FALSE",]
+resnotnamed$label<-""
+res$type<-""
+All<-rbind(resnamed,resnotnamed)
+res<-All
+guttype<-res[res$taxon%in%guttaxa,]
+guttype$type<-"gut"
+oraltype<-res[res$taxon%in%oraltaxa,]
+oraltype$type<-"oral"
+notype<-res[!((res$taxon%in%oraltaxa)|(res$taxon%in%guttaxa)),]
+notype$type<-"unknown"
+All<-rbind(guttype,oraltype,notype)
+res<-All
+vec<-colnames(res)
+rmv<-grep('se',vec)
+res2<-res[,-c(rmv)]
+res2$q.val[res2$q.val==0.000]<-0.001
+titlecounts<-titlelist[[var]]
+titlecounts<-as.character(titlecounts)
+titlecounts<-paste0(titlecounts,", ")
+titlecounts<-paste(titlecounts,collapse="")
+title<-paste0("This is the variable ",var,". ",titlecounts)
+melted<-melt(res2, id.vars=c("taxon","W","p.val","q.val","diff.abn","otu_means","label","type"))
+a<-ggplot(melted, aes(x=value, y=-log(q.val),label=label,colour=type))+geom_point(aes(size=otu_means,alpha=0.5))+geom_text_repel(size=1,segment.size = 0.2)+facet_wrap(~variable,ncol=3)+ggtitle(title)+scale_color_manual(values=c("red","blue","grey"))+geom_vline(xintercept = 0,linetype=2)+theme_classic()
+
+oturelative<-otu_table(t(psallOfamilyrelative))
+colnames(oturelative)<-as.vector(taxlist$Family)
+Allsite<-cbind(meta,oturelative)
+z<-apply(oturelative, 2, function(x) sum(x>0.05)/nrow(oturelative)>0.01)
+oturelativeremain<-oturelative[,z]
+oturelativeremain<-as.matrix(oturelativeremain)
+oturelativeremain<-as.data.frame(oturelativeremain)
+All<-cbind(meta,oturelativeremain)
+All<-All[,-c(2:10,12:79)]
+melted<-melt(All)
+scols<-iwanthue(n=6)
+a<-ggplot(melted, aes(x=Site.x,y=value,fill=Site.x))+geom_boxplot()+scale_fill_manual(values=scols)+facet_wrap(~variable, scales="free",ncol=7)+theme(axis.text.x = element_text(angle=45,hjust=1,size=6))
+
+```
+
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA")
+#testthese<-c(11,13:24,27,28,33:39,54)
+#testthese<-c(11,13:39,58:64) 
+#testthese<-c(11,13:24,27,28,30,33:39)
+ps_rare<-rarefy_even_depth(psall_time,rng=333)
+Allsamplesunifrac<-phyloseq::distance(ps_rare,method="wunifrac")
+set.seed(4235421)
+meta<-sample_data(ps_rare)
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in 2:dim(metas)[2]){
+varname<-colnames(metas[x])
+print(varname)
+ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE,strata=Subject_ID)
+ad2<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+mod<-betadisper(Allsamplesunifrac, metas[,x], type="centroid")
+an<-anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+ordplot<-plot(mod.HSD)
+var<-paste0(varname)
+ano<-anosim(Allsamplesunifrac, metas[,x])
+#q<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=varname))+geom_point()+theme_classic()+stat_ellipse()
+tests[[varname]]<-list(name=varname,adonis=ad,dispersion=mod,anova=an,permuttest=pmod,mod.HSD=mod.HSD,anos=ano,adonis2=ad2)
+}
+
+ad<-adonis2(as.dist(Allsamplesunifrac)~Current_Smoker+Sex+Cough,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+```
+
+```{r}
+pdf("~/MAPLE/MaplevarsordinationsOralSiteOther.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.01)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis"]][1:3]
+  pv<-tests[[i]][["adonis"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+}
+}
+
+adonis2(as.dist(Allsamplesunifrac)~Site.x+COPD_Hx+HomeOxygen+ED_steroids+ED_bronchodilators+Cough+Chills+OUTCOME_CAP+LRTIdecision,data=metas,strata=Time,permutations = 999,na.rm=TRUE)
+adonis2(as.dist(Allsamplesunifrac)~COPD_Hx*HomeOxygen*ED_steroids*ED_bronchodilators*Cough*Chills*OUTCOME_CAP*LRTIdecision,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+#Copd<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=ED_steroids))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+stat_ellipse()
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("Site.x","Asthma_Hx","ED_steroids","Wheezing","abx_ed","hosp_admit","Overall_Adverse_outcome","Adverse_outcome_Rehospitalization")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point()+geom_point(data=cents,size=5)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))
+}
+pdf("/Users/rogersm/MAPLE/PcoAplotsTimeOtherSites.pdf",width=11, height=8.5)
+grid.arrange(plotlist[[2]],plotlist[[3]],plotlist[[4]],plotlist[[5]],plotlist[[6]],plotlist[[7]],plotlist[[8]],plotlist[[9]],plotlist[[9]])
+dev.off()
+```
+
+
+#Find oral and fecal samples that are too similar
+```{r}
+psof<-psall%>%subset_samples((Site.y=="O"|Site.y=="F")&Batch=="1"&Site.x!="NA")%>%prune_taxa(taxa_sums(.) > 0, .)
+meta<-meta(psof)
+subjects<-meta$Subject_ID
+Fecal<-subset(meta, Site.y=="F")
+Oral<-subset(meta, Site.y=="O")
+ovfsubjects<-venn(list(Oral$Subject_ID,Fecal$Subject_ID))
+Sharedfecaloral<-attr(ovfsubjects,"intersections")$`A:B`
+Sharedpatients<-unique(Sharedfecaloral)
+psshared<-psall%>%subset_samples((Site.y=="O"|Site.y=="F")&Batch=="1"&Site.x!="NA"&Subject_ID%in%Sharedpatients)%>%prune_taxa(taxa_sums(.) > 0, .)
+meta<-meta(psshared)
+metaorder<-meta[order(meta$Subject_ID,meta$Site.y,meta$Time),]
+metalimited<-meta[,c("Subject_ID","Site.y","Time")]
+ordered<-rownames(metalimited)
+ps_rare<-rarefy_even_depth(psshared,rng=333)
+#ps_rare<-psof
+Allsamplesunifrac<-phyloseq::distance(ps_rare,method="jaccard")
+Allsamplesunifrac<-as.matrix(Allsamplesunifrac)
+Orderedmat<-reorder_mat(Allsamplesunifrac,order=ordered)
+listmat<-list("")
+for (i in unique(Sharedpatients)){
+  print(i)
+  j<-grep(i, metalimited$Subject_ID)
+  mat2<-Orderedmat[j,j]
+  metapatient<-metalimited[j,]
+  Allmat<-cbind(metapatient,mat2)
+  #print(Allmat)
+  listmat[[i]]<-Allmat
+}
+listmat<-listmat[-1]
+distlistoral<-list("")
+distlistoralvec<-list("")
+for (i in names(listmat)){
+#Compare All Orals per Patient (within Patient Oral variation)
+tmp<-listmat[[i]]
+v<-grep("O",tmp$Site.y)
+h<-v+3
+distlistoral[[i]]<-tmp[v,h]
+tmp2<-tmp[v,h]
+vec<-unique(as.vector(unlist(distlistoral[[i]])))
+if (length(vec)>1){
+  distlistoralvec[[i]]<-vec[-1]
+}
+}
+
+#Compare All Fecals per Patient (within Patient Oral variation)
+
+distlistfecal<-as.list("")
+distlistfecalvec<-as.list("")
+for (i in names(listmat)){
+tmp<-listmat[[i]]
+v<-grep("F",tmp$Site.y)
+h<-v+3
+distlistfecal[[i]]<-tmp[v,h]
+tmp2<-tmp[v,h]
+vec<-unique(as.vector(unlist(distlistfecal[[i]])))
+if (length(vec)>1){
+  distlistfecalvec[[i]]<-vec[-1]
+}
+}
+
+#Compare All Fecals Oral comparisons per Patient (within Patient Oral/Fecal variation)
+
+distlistfecaloral<-as.list("")
+distlistfecaloralvec<-as.list("")
+for (i in names(listmat)){
+tmp<-listmat[[i]]
+v<-grep("F",tmp$Site.y)
+h<-grep("O",tmp$Site.y)
+h<-h+3
+distlistfecaloral[[i]]<-tmp[v,h]
+tmp2<-tmp[v,h]
+vec<-unique(as.vector(unlist(distlistfecaloral[[i]])))
+if (length(vec)>1){
+  distlistfecaloralvec[[i]]<-vec[-1]
+}
+}
+
+#Unlist and Plot Results
+
+Oraldf<-as.data.frame(unlist(distlistoralvec[-1]))
+Fecaldf<-as.data.frame(unlist(distlistfecalvec[-1]))
+FecalOraldf<-as.data.frame(unlist(distlistfecaloralvec[-1]))
+colnames(Oraldf)[1]<-"Dist"
+colnames(Fecaldf)[1]<-"Dist"
+colnames(FecalOraldf)[1]<-"Dist"
+Fecaldf$Comparison<-"Intrapatient Variation Fecal Sites"
+FecalOraldf$Comparison<-"Intrapatient Variation Fecal vs Oral"
+Oraldf$Comparison<-"Intrapatient Variation Oral Sites"
+Allcomparison<-rbind(Oraldf,Fecaldf,FecalOraldf)
+j<-ggplot(Allcomparison, aes(x=Comparison,y=Dist))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)
+
+#Interpatient Comparisons
+listmat2<-list("")
+for (i in unique(Sharedpatients)){
+  print(i)
+  j<-grep(i, metalimited$Subject_ID)
+  mat2<-Orderedmat[j,]
+  metapatient<-metalimited[j,]
+  Allmat<-cbind(metapatient,mat2)
+  #print(Allmat)
+  listmat2[[i]]<-Allmat
+}
+
+listmat2<-listmat2[-1]
+
+
+for (i in names(listmat2)){
+ print(listmat2[[i]])
+}
+
+listmat2<-listmat2[-1]
+
+#Oral Interpatient
+#Inter Oral Comparisons
+interdistlistoral<-as.list("")
+interdistlistoralvec<-as.list("")
+for (i in names(listmat2)){
+print(i)
+mat3<-listmat2[[i]]
+a<-rownames(mat3)
+j<-strsplit(a,"-")
+k<-j[[1]][3]
+l<-j[[1]][4]
+s<-grep(k,colnames(mat3))
+mat4<-mat3[,-s]
+rsite<-grep("O",rownames(mat4))
+csite<-grep("O",colnames(mat4))
+interdistlistoral[[i]]<-mat4[rsite,c(1:3,csite)]
+vec<-unique(as.vector(unlist(interdistlistoral[[i]])))
+vec2<-as.numeric(vec[-c(1:4)])
+interdistlistoralvec[[i]]<-vec2
+}
+
+#Inter Fecal Comparisons
+interdistlistfecal<-as.list("")
+interdistlistfecalvec<-as.list("")
+
+for (i in names(listmat2)){
+print(i)
+mat3<-listmat2[[i]]
+a<-rownames(mat3)
+j<-strsplit(a,"-")
+k<-j[[1]][3]
+l<-j[[1]][4]
+s<-grep(k,colnames(mat3))
+mat4<-mat3[,-s]
+rsite<-grep("F",rownames(mat4))
+csite<-grep("F",colnames(mat4))
+interdistlistfecal[[i]]<-mat4[rsite,c(1:3,csite)]
+vec<-unique(as.vector(unlist(interdistlistfecal[[i]])))
+vec2<-as.numeric(vec[-c(1:4)])
+interdistlistfecalvec[[i]]<-vec2
+}
+
+#Inter Oral Comparisons
+interdistlistfecaloral<-as.list("")
+interdistlistfecaloralvec<-as.list("")
+
+for (i in names(listmat2)){
+print(i)
+mat3<-listmat2[[i]]
+a<-rownames(mat3)
+j<-strsplit(a,"-")
+k<-j[[1]][3]
+l<-j[[1]][4]
+s<-grep(k,colnames(mat3))
+mat4<-mat3[,-s]
+rsite<-grep("O",rownames(mat4))
+csite<-grep("F",colnames(mat4))
+interdistlistfecaloral[[i]]<-mat4[rsite,c(1:3,csite)]
+vec<-unique(as.vector(unlist(interdistlistfecaloral[[i]])))
+vec2<-as.numeric(vec[-c(1:4)])
+interdistlistfecaloralvec[[i]]<-vec2
+}
+
+#Inter Oral Comparisons
+interdistlistoral<-as.list("")
+interdistlistoralvec<-as.list("")
+
+for (i in names(listmat2)){
+print(i)
+mat3<-listmat2[[i]]
+a<-rownames(mat3)
+j<-strsplit(a,"-")
+k<-j[[1]][3]
+l<-j[[1]][4]
+s<-grep(k,colnames(mat3))
+mat4<-mat3[,-s]
+rsite<-grep("O",rownames(mat4))
+csite<-grep("O",colnames(mat4))
+interdistlistoral[[i]]<-mat4[rsite,c(1:3,csite)]
+vec<-unique(as.vector(unlist(interdistlistoral[[i]])))
+vec2<-as.numeric(vec[-c(1:4)])
+interdistlistoralvec[[i]]<-vec2
+}
+
+Oraldf<-as.data.frame(unique(unlist(distlistoralvec[-1])))
+Fecaldf<-as.data.frame(unique(unlist(distlistfecalvec[-1])))
+FecalOraldf<-as.data.frame(unique(unlist(distlistfecaloralvec[-1])))
+Oralinterpatientdf<-as.data.frame(unique(unlist(interdistlistfecalvec[-1])))
+Fecalinterpatientdf<-as.data.frame(unique(unlist(interdistlistfecalvec[-1])))
+FecalOralinterpatientdf<-as.data.frame(unique(unlist(interdistlistfecaloralvec[-1])))
+colnames(Oraldf)[1]<-"Dist"
+colnames(Fecaldf)[1]<-"Dist"
+colnames(FecalOraldf)[1]<-"Dist"
+colnames(Oralinterpatientdf)[1]<-"Dist"
+colnames(Fecalinterpatientdf)[1]<-"Dist"
+colnames(FecalOralinterpatientdf)[1]<-"Dist"
+Fecaldf$Comparison<-"Intrapatient Variation Fecal Sites"
+FecalOraldf$Comparison<-"Intrapatient Variation Fecal vs Oral"
+Oraldf$Comparison<-"Intrapatient Variation Oral Sites"
+Fecalinterpatientdf$Comparison<-"Interpatient Variation Fecal Sites"
+FecalOralinterpatientdf$Comparison<-"Interpatient Variation Fecal vs Oral"
+Oralinterpatientdf$Comparison<-"Interpatient Variation Oral Sites"
+
+All<-rbind(Oraldf,Fecaldf,FecalOraldf,Fecalinterpatientdf,FecalOralinterpatientdf,Oralinterpatientdf)
+diffsjaccard<-ggplot(All, aes(x=Comparison,y=Dist))+geom_boxplot(fill="grey")+theme(axis.text.x = element_text(angle=90))
+```
+
+
+
+
+#Site variable independence
+```{r}
+library("rcompanion")
+pso<-psall%>%subset_samples(Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)%>%prune_taxa(taxa_sums(.) > 0, .)
+meta<-meta(pso)
+metas<-sanitizer3(meta)
+metas2<-sparserFactors2(metas)
+chilist<-list("")
+metas2$Site.x<-factor(metas2$Site.x, level=c("OSU","UPMC","PSU_HERSHEY","WAYNE_STATE","SGH","OSUHE"),labels=c("NOT UPMC","UPMC","NOT UPMC","NOT UPMC","NOT UPMC","NOT UPMC"))
+for (i in 2:dim(metas2)[2]){
+j<-xtabs(~Site.x+metas2[,i],data=metas2)
+vname<-print(colnames(metas2)[i])
+print(j)
+p<-summary(j)
+chilist[[vname]]<-p
+#print(p)
+}
+
+m <- matrix(0, ncol = dim(metas2)[2], nrow = dim(metas2)[2])
+
+df = data.frame(nrow=metas2,ncol=metas2)
+for (i in 1:dim(metas2)[2]){
+  for (j in 1:dim(metas2)[2]){
+    y<-xtabs(~metas2[,i]+metas2[,j],data=metas2)
+    y<-y[1:2,1:2]
+    m[i,j]<-cramerV(y,bias.correct = TRUE)
+  }
+}
+
+colns<-colnames(metas2)
+
+colnames(m)<-colns
+rownames(m)<-colns
+m<-as.data.frame(m)
+```
+
+
+#Final Fecal Permanovas
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(psall, Site.y=="F"&Batch=="1"&Site.x!="NA")
+#testthese<-c(11,13:24,27,28,33:39,54)
+#testthese<-c(11,13:39,58:64) 
+#testthese<-c(11,13:24,27,28,30,33:39)
+ps_rare<-rarefy_even_depth(psall_time,rng=999)
+#Allsamplesunifrac<-phyloseq::distance(ps_rare,method="wunifrac")
+Allsamplesunifrac<-UniFrac(ps_rare, weighted=TRUE, normalized=FALSE, parallel=FALSE, fast=TRUE)
+set.seed(4235421)
+meta<-sample_data(ps_rare)
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+
+m<-meta(ps_rare)
+metadata<-sanitizer2(m)
+sample_data(ps_rare)<-metadata
+metadata<-meta(ps_rare)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+
+#ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+ad<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=TRUE)
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 9999,na.rm=TRUE)
+ad<-adonis2(as.dist(Allsamplesunifrac)~Current_Smoker+Sex+Cough,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+
+ad<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi,data=metadata,permutations = perm,na.rm=TRUE)
+
+ad<-adonis2(Allsamplesunifrac~city+Sex+Race+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+ED_steroids+ED_bronchodilators+Rhonchi+Overall_Adverse_outcome,data=metadata,permutations = 9999,na.rm=TRUE)
+
+```
+
+```{r}
+pdf("~/Documents/MAPLE/FinalFigs/MaplevarsordinationsfecalTime1.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.0001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis"]][1:3]
+  pv<-tests[[i]][["adonis"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  #print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+  j<-paste(tests[[i]][["name"]],tests[[i]][["adonis"]]$`R2`[1],tests[[i]][["adonis"]]$F[1],tests[[i]][["adonis"]]$`Pr(>F)`[1],sep=" ")
+  print(j)
+}
+}
+adonis2(as.dist(Allsamplesunifrac)~Site.x+COPD_Hx+HomeOxygen+ED_steroids+ED_bronchodilators+Cough+Chills+OUTCOME_CAP+LRTIdecision,data=metas,strata=Time,permutations = 999,na.rm=TRUE)
+#adonis2(as.dist(Allsamplesunifrac)~COPD_Hx*HomeOxygen*ED_steroids*ED_bronchodilators*Cough*Chills*OUTCOME_CAP*LRTIdecision,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+#Copd<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=ED_steroids))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+stat_ellipse()
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("Site.x","Sex","Chills")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point(size=0.5)+geom_point(data=cents,size=3)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))
+}
+plotlist<-plotlist[-1]
+
+pdf("/Users/rogersm/Documents/MAPLE/FinalFigs/PCOAfecaltime1.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(plotlist[[1]],plotlist[[2]],plotlist[[3]])
+dev.off()
+```
+
+
+
+
+#Gut bacteria in Sites
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA")
+ps_rarefamily<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-pstime1 %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,5]
+taxlist<-as.vector(taxlist)
+OTUs<-t(otu_table(ps_rarefamilyrelative))
+colnames(OTUs)<-taxlist
+meta<-meta(ps_rarefamily)
+meta<-sanitizer2(meta)
+OTUs<-t(otu_table(ps_rarefamily))
+OTUsrelative<-t(otu_table(ps_rarefamilyrelative))
+colnames(OTUsrelative)<-taxlist
+#guttaxa<-c("Bacteroidaceae","Ruminococcaceae","Streptococcaceae","Pasteurellaceae")
+OTUsrelativegut<-OTUsrelative[,guttaxa]
+All<-cbind(meta,OTUsrelativegut)
+All<-All[order(All$Bacteroidaceae),]
+All$SampleID2<-factor(All$SampleID2, levels=All$SampleID2)
+melted<-melt(All, id.vars=colnames(All)[1:79])
+Bact<-ggplot(All, aes(x=Site.x,y=Bacteroidaceae))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme_bw()+theme(axis.text.x = element_text(angle=90))
+Rumino<-ggplot(All, aes(x=Site.x,y=Ruminococcaceae))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme_bw()+theme(axis.text.x = element_text(angle=90))
+Strepto<-ggplot(All, aes(x=Site.x,y=Streptococcaceae))+geom_jitter(width=0.1)+stat_summary(fun.data = "mean_cl_boot", colour = "red", size = 0.8)+theme_bw()+theme(axis.text.x = element_text(angle=90))
+pdf("/Users/rogersm/Documents/MAPLE/FinalFigs/FigS5.pdf",width=11,height=8.5,useDingbats = FALSE)
+grid.arrange(Bact,Rumino,Strepto,ncol=2)
+dev.off()
+```
+
+
+
+
+
+```{r}
+#Contamination check
+pscontrols<-subset_samples(ps, Site=="EC"|Site=="MCS"|Site=="PCR")
+pscontrols<-prune_samples(sample_sums(pscontrols)>200,pscontrols)
+ps_rarefamily<-pscontrols %>%
+  tax_glom(taxrank = "Family") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-pscontrols %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxnames<-tax_table(ps_rarefamilyrelative)[,5]
+otus<-otu_table(ps_rarefamilyrelative)
+otus<-t(otus)
+colnames(otus)<-taxnames
+select<-apply(otus,2,function(x) mean(x)>0.001)
+otus<-otus[,select]
+meta<-meta(ps_rarefamilyrelative)
+All<-cbind(meta,otus)
+j<-iwanthue(dim(All)[2])
+melted<-melt(All, id.vars=colnames(All)[1:6])
+
+a<-ggplot(melted, aes(x=SampleID2,y=value, fill=variable))+geom_bar(stat="identity")+scale_fill_manual(values=j)
+```
+
+
+#Stats comparison
+```{r}
+metaAll<-meta(ps_rare)
+Sexcompare<-fisher.test(metacompare$Sex,metacompare$Batch)
+Racecompare<-fisher.test(metacompare$Race,metacompare$Batch)
+Agecompare<-wilcox_test(meta$Age~meta$Batch)
+table(metacompare$Race,metacompare$Batch)
+wilcox.exact(metaAll$Age~metaAll$Batch)
+fisher.test(metaAll$Sex,metaAll$Batch)
+```
+
+```{r}
+ps_rare<-rarefy_even_depth(psall,rng=999)
+ps_rare<-subset_samples(ps_rare, Site.y=="O"&Time==1)
+ps_rare<-subset_samples(ps_rare,Age!="NA")
+
+Allsamplesunifrac<-UniFrac(ps_rare,weighted=TRUE)
+set.seed(4235421)
+# proj <- get_ordination(pseq, "MDS", "bray")
+ord <- ordinate(ps_rare, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite,shape=Time))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs DRDR Samples")+stat_ellipse()
+meta<-meta(ps_rare)
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+meta$Sex<-gsub("1","M",meta$Sex)
+meta$Sex<-gsub("2","F",meta$Sex)
+meta$Age<-as.numeric(as.character(meta$Age))
+metacompare<-meta
+ad2<-adonis2(Allsamplesunifrac~BatchSite+Race+Sex+Age, data=meta,permutations=999)
+ad<-adonis(Allsamplesunifrac~BatchSite, data=meta,permutations=9999)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+PCoAplotOral<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=BatchSite))+geom_point(data=metavecs)+geom_point(data=cents,size=5)+theme_classic()+xlim(-0.03,0.05)+ylim(-0.01,0.04)
+```
+
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+#testthese<-c(11,13:24,27,28,33:39,54)
+#testthese<-c(11,13:39,58:64) 
+#testthese<-c(11,13:24,27,28,30,33:39)
+ps_rare<-rarefy_even_depth(psall_time,rng=999)
+Allsamplesunifrac<-phyloseq::distance(ps_rare,method="wunifrac")
+set.seed(4235421)
+meta<-sample_data(ps_rare)
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+metas<-sanitizer2(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in c(16,21,61,65)){
+varname<-colnames(metas[x])
+print(varname)
+ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+ad2<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+mod<-betadisper(Allsamplesunifrac, metas[,x], type="centroid")
+an<-anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+ordplot<-plot(mod.HSD)
+var<-paste0(varname)
+ano<-anosim(Allsamplesunifrac, metas[,x])
+#q<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=varname))+geom_point()+theme_classic()+stat_ellipse()
+tests[[varname]]<-list(name=varname,adonis=ad,dispersion=mod,anova=an,permuttest=pmod,mod.HSD=mod.HSD,anos=ano,adonis2=ad2)
+}
+```
+
+```{r}
+pdf("~/MAPLE/Maplevarsordinations.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.0001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis"]][1:3]
+  pv<-tests[[i]][["adonis"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.00001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  #print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+  j<-paste(tests[[i]][["name"]],tests[[i]][["adonis"]]$`R2`[1],tests[[i]][["adonis"]]$F[1],tests[[i]][["adonis"]]$`Pr(>F)`[1],sep=" ")
+  print(j)
+}
+}
+#adonis2(as.dist(Allsamplesunifrac)~Site.x+COPD_Hx+HomeOxygen+ED_steroids+ED_bronchodilators+Cough+Chills+OUTCOME_CAP+LRTIdecision,data=metas,strata=Time,permutations = 999,na.rm=TRUE)
+#adonis2(as.dist(Allsamplesunifrac)~COPD_Hx*HomeOxygen*ED_steroids*ED_bronchodilators*Cough*Chills*OUTCOME_CAP*LRTIdecision,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+#Copd<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=ED_steroids))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+stat_ellipse()
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("OUTCOME_COPD","CorticosteroidsOral","Overall_Adverse_outcome","COPD_Hx")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point()+geom_point(data=cents,size=5)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))
+}
+pdf("/Users/rogersm/Documents/MAPLE/FinalFigs/Fig3.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(plotlist[[5]],plotlist[[4]],plotlist[[3]],plotlist[[2]])
+dev.off()
+```
+
+```{r}
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+metadata<-meta(pstime1)
+metadata<-sanitizer2(metadata)
+sample_data(pstime1)<-metadata
+```
+
+#ANCOM everything!
+```{r Ancom Saliva variables}
+tests<-as.list("")
+gplotlist<-as.list("")
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA")
+ps_rarefamily<-pstime1 %>%
+  tax_glom(taxrank = "Genus") %>% 
+  # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/1})
+ps_rarefamilyrelative<-pstime1 %>%
+  tax_glom(taxrank = "Genus") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)})
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,6]
+taxlist<-as.vector(taxlist)
+OTUs<-t(otu_table(ps_rarefamily))
+colnames(OTUs)<-taxlist
+meta<-meta(ps_rarefamily)
+OTUrelative<-t(otu_table(ps_rarefamilyrelative))
+colnames(OTUrelative)<-taxlist
+taxnames<-tax_table(ps_rarefamily)
+taxlist<-taxnames[,6]
+taxlist<-as.vector(taxlist)
+colnames(OTUs)<-taxlist
+
+write.csv(OTUs, "~/Desktop/tmp1.txt")
+write.csv(meta, "~/Desktop/tmp2.txt")
+OTU<-read.csv("~/Desktop/tmp1.txt",header=TRUE)
+#OTU<-OTU[,-c(1:2)]
+META<-read.csv("~/Desktop/tmp2.txt",header=TRUE)
+colnames(META)[1]<-"Sample.ID"
+colnames(OTU)[1]<-"Sample.ID"
+varnames<-colnames(META)[c(14,15,17,18,19:40,55,56,62:66)]
+
+varancomlist<-list("")
+chilist<-list("")
+tablist<-list("")
+for (i in 1:length(varnames)){
+vn<-varnames[i]
+print(vn)
+longitudinal_comparison_test=ANCOM.main(OTUdat=OTU,
+                                        Vardat=META,
+                                        adjusted=TRUE,
+                                        repeated=FALSE,
+                                        main.var=vn,
+                                        adj.formula="city",
+                                        #repeat.var="Patient",
+                                        longitudinal=FALSE,
+                                        random.formula="~1|Patient",
+                                        multcorr=1,
+                                        sig=0.05,
+                                        prev.cut=0.90)
+ancomtaxa<-longitudinal_comparison_test$W.taxa
+anc<-subset(ancomtaxa,detected_0.6=="TRUE")
+varancomlist[[vn]]<-anc
+#tabl[[vn]]<-table(META[,i],META$city)
+}
+
+
+OTUrelative<-as.data.frame(t(otu_table(ps_rarefamilyrelative)))
+taxlist<-gsub("\\[","",taxlist)
+taxlist<-gsub("\\]","",taxlist)
+colnames(OTUrelative)<-taxlist
+
+plotancom<-list("")
+for (i in 2:length(varancomlist)){
+    melted<-""
+    All<-""
+    a<-""
+    print(i)
+    j<-varancomlist[[i]]
+    varn<-names(varancomlist)[i]
+    taxa<-as.vector(j$otu.names)
+    taxa<-gsub("X\\.","",taxa)
+    taxa<-gsub("\\.","",taxa)
+    print(taxa)
+      if (length(taxa)>0){
+      OTUrelativeforplot<-OTUrelative[,taxa]
+      OTUrelativeforplot<-as.data.frame(OTUrelativeforplot)
+      colnames(OTUrelativeforplot)<-taxa
+      All<-cbind(meta,OTUrelativeforplot)
+    melted<-melt(All, id.vars=colnames(All)[1:80])
+    melted<-melted[,c("Sample_ID",varn,"variable","value")]
+    colnames(melted)<-c("Sample_ID","testvar","variable","value")
+    #melted<-melted[-grep("Unknown",melted$testvar),]
+    print(All)
+    print(melted)
+    #a<-ggplot(melted,aes(x=melted[,2],y=value,fill=variable))+geom_boxplot()+ggtitle(paste0(varn))
+    plotancom[[varn]]<-melted
+  }
+  }
+
+plotancom<-plotancom[-1]
+#plotancom<-plotancom[lapply(plotancom,length)>0]
+library("cowplot")
+pl<-list("")
+tmp<-do.call(rbind,plotancom)
+tmp<-tmp[-1,]
+txs<-unique(tmp$variable)
+scolfill<-iwanthue(length(txs))
+names(scolfill)<-txs
+stuff<-ggplot(tmp, aes(x=testvar,y=value,fill=variable))+geom_boxplot()+scale_fill_manual(values=scolfill)+theme(legend.position = "bottom")
+legend<-get_legend(stuff)
+for (i in names(plotancom)){
+  print (i)
+  plotstuff<-plotancom[[i]]
+  pl[[i]]<-ggplot(plotstuff, aes(x=testvar,y=value,fill=variable))+geom_boxplot()+ggtitle(paste0(i))+scale_fill_manual(values=scolfill)+theme_bw()+theme(legend.position = "none")
+}
+
+pdf("/Users/rogersm/MapleFigs/Totallyfinalfiles/AncomSignificantOral.pdf",width=11,height=8.5,useDingbats = FALSE)
+grid.arrange(pl[["Asthma_Hx"]],pl[["Corticosteroidsinhaled"]],pl[["ED_steroids"]],pl[["Cough"]],pl[["abx_ed"]],pl[["OUTCOME_Asthma"]],legend,nrow=2)
+dev.off()
+```
+
+```{r}
+#Investigate Site metadata associations
+pstime1<-subset_samples(psall, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+meta<-meta(pstime1)
+write.csv(meta,"~/Desktop/metas.txt")
+
+metasforcorr<-read.csv("/Users/rogersm/MapleFigs/Totallyfinalfiles/metas.csv")
+rownames(metasforcorr)<-metasforcorr[,1]
+metasforcorr<-metasforcorr[,-1]
+metasforcorr[is.na(metasforcorr)] <- 0
+metasforcorr2<-apply(metasforcorr,2,function(x) as.numeric(x))
+res <- cor(metasforcorr2)
+round(res, 2)
+
+cor(metasforcorr2, use = "complete.obs")
+res2 <- rcorr(as.matrix(metasforcorr2))
+res2$r
+# Extract p-values
+res2$P
+
+library(corrplot)
+pdf("~/Desktop/corrplot.pdf",width=11,height=8.5,useDingbats = FALSE)
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+dev.off()
+```
+
+```{r}
+# Insignificant correlation are crossed
+pdf("~/Desktop/Corrplot2.pdf",useDingbats = FALSE)
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.05, insig = "blank")
+dev.off()
+# Insignificant correlations are leaved blank
+pdf("~/Desktop/Corrplot.pdf",useDingbats = FALSE)
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.05, insig = "blank")
+dev.off()
+```
+
+```{r}
+table(meta$Sex,meta$city)
+```
+
+
+
+```{r}
+limitmetatoyes<-function(x){
+  meta_data<-x
+  value<-apply(meta_data,2, function(x) grep('Yes',x))
+  print(length(value))
+  return(value)
+}
+```
+
+
+```{r}
+library(Hmisc)
+res2<-rcorr(as.matrix(metas))
+flattenCorrMatrix(res2$r, res2$P)
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+pdf("~/Desktop/heat.pdf")
+heatmap(x = res, col = col, symm = TRUE)
+dev.off()
+```
+
+```{r}
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+```
+
+
+
+
+```{r}
+ps_rare2030<-subset_samples(ps_rare, Age>=20&Age<=30)
+meta<-sample_data(ps_rare2030)
+Allsamplesunifrac<-UniFrac(ps_rare2030,weighted=TRUE)
+ord <- ordinate(ps_rare2030, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare2030<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+```
+
+```{r}
+ps_rare3040<-subset_samples(ps_rare, Age>=30&Age<=40)
+meta<-sample_data(ps_rare3040)
+Allsamplesunifrac<-UniFrac(ps_rare3040,weighted=TRUE)
+ord <- ordinate(ps_rare3040, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare3040<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+```
+
+```{r}
+ps_rare4050<-subset_samples(ps_rare, Age>=40&Age<=50)
+meta<-sample_data(ps_rare4050)
+Allsamplesunifrac<-UniFrac(ps_rare4050,weighted=TRUE)
+ord <- ordinate(ps_rare4050, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare4050<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+```
+
+```{r}
+ps_rare5060<-subset_samples(ps_rare, Age>=50&Age<=60)
+meta<-sample_data(ps_rare5060)
+Allsamplesunifrac<-UniFrac(ps_rare5060,weighted=TRUE)
+ord <- ordinate(ps_rare5060, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare5060<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+```
+
+```{r}
+ps_rare6070<-subset_samples(ps_rare, Age>=60&Age<=70)
+meta<-sample_data(ps_rare6070)
+Allsamplesunifrac<-UniFrac(ps_rare6070,weighted=TRUE)
+ord <- ordinate(ps_rare6070, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+Batchcompare6070<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=BatchSite))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+meta$BatchSite<-paste0(meta$Batch,"_",meta$Site.y)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+ad2<-adonis2(Allsamplesunifrac~BatchSite, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, meta$BatchSite, type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+j<-pairwise.adonis2(Allsamplesunifrac~BatchSite,data=meta,nperm=perm)
+length(j)
+for (i in 2:length(j)){
+  comp<-names(j)[i]
+  R<-j[[i]]$R2[1]
+  P<-j[[i]]$`Pr(>F)`[1]
+  totes<-paste0(comp," ",R," ",P)
+  print(totes)
+}
+pdf("~/Desktop/All.pdf",width=11,height=8.5)
+grid.arrange(Batchcompare2030,Batchcompare3040,Batchcompare4050,Batchcompare5060,Batchcompare6070)
+dev.off()
+```
+
+#Asthma comparisons
+
+```
+
+```{r}
+  tests<-as.list("")
+  gplotlist<-as.list("")
+  psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA")
+  Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+  set.seed(4235421)
+  meta<-meta(psall_time)
+  metas<-sanitizer3(meta)
+  metas$Subject_ID<-as.factor(as.character(metas$Subject_ID))
+  sample_data(psall_time)<-metas
+  metadata<-meta(psall_time)
+metadataseverity<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=2)
+colnames(metadataseverity)[1]<-"Subject_ID"
+metadataseveritycopd<-metadataseverity[,c(1,35,36)]
+metadata<-inner_join(metas,metadataseveritycopd,by="Subject_ID")
+rownames(metadata)<-metadata[,1]
+sample_data(psall_time)<-metadata
+
+psall_COPD<-subset_samples(psall_time, Site.y=="O"&Batch=="1"&Site.x!="NA"&COPD_Hx=="Yes")
+
+Allsamplesunifrac<-UniFrac(psall_COPD,weighted=TRUE)
+ord <- ordinate(psall_COPD, "MDS", "wunifrac")
+coordPCA<-ord$vectors
+coordPCA<-coordPCA[,1:3]
+meta<-meta(psall_COPD)
+bdiv<-cbind(meta, coordPCA)
+bdiv<-as.data.frame(bdiv,stringsAsFactors=FALSE)
+#bdiv$Batch<-factor(bdiv$Batch, levels=c(1,2), labels=c("MAPLE","DRDR"))
+#bdiv$BatchSite<-paste0(bdiv$Batch,"_",bdiv$Site.y)
+COPDOrdinate<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=as.factor(meta$com_history_copd_severity)))+geom_point()+theme_classic()+ggtitle("PcoA Maple vs Vieira Lab Samples")+stat_ellipse()
+
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(meta, Time)
+
+
+ad2<-adonis2(Allsamplesunifrac~as.factor(com_history_copd_severity)+city, data=meta,permutations=perm)
+kable(ad2,digits=2)
+mod<-betadisper(Allsamplesunifrac, as.factor(meta$com_history_asthma_severity), type="centroid")
+anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+plot(mod.HSD)
+View(meta)
+vecs<-mod$vectors
+cents<-mod$centroids
+cents<-as.data.frame(cents)
+cents$BatchSite<-rownames(cents)
+vecs<-vecs[,1:2]
+metavecs<-cbind(meta,vecs)
+```
+
+```{r}
+install.packages("/Users/rogersm/Downloads/LDM-master/LDM_4.0.tar.gz",repos=NULL)
+library(LDM)
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="O"&Batch=="1"&Site.x!="NA"&Time==1)
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+ord <- ordinate(psall_time, "MDS", "wunifrac")
+meta<-meta(psall_time)
+#meta<-as.matrix(meta)
+#meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+#testthese<-colnames(metas)
+All<-cbind(metas,ord$vectors)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in 2:dim(metas)[2]){
+varname<-colnames(metas[x])
+print(varname)
+}
+m<-meta(psall_time)
+metadata<-sanitizer3(m)
+sample_data(psall_time)<-metadata
+metadata<-meta(psall_time)
+perm <- how(nperm = 999)
+setBlocks(perm) <- with(metadata, city)
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+Sex+Race+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=TRUE)
+
+ad_withstrata<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations=perm,na.rm=TRUE)
+
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomeadstrata<-adonis2(Allsamplesunifrac~Age+OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,perm=perm,na.rm=TRUE)
+outcomenostrata<-adonis2(Allsamplesunifrac~city+OUTCOME_CAP+OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+
+kable(ad_nostrata,format="pipe")
+test<-metadata
+test2<-test[,c(1,80)]
+tmp<-dcast(test2,Sample_ID~city)
+tmp$Columbus<-gsub("Columbus","Yes",tmp$Columbus)
+tmp$Pittsburgh<-gsub("Pittsburgh","Yes",tmp$Pittsburgh)
+tmp$Hershey<-gsub("Hershey","Yes",tmp$Hershey)
+tmp$Detroit<-gsub("Detroit","Yes",tmp$Detroit)
+tmp[is.na(tmp)]="No"
+
+Newmeta<-cbind(metadata,tmp)
+
+ad<-adonis2(Allsamplesunifrac~Detroit*Pittsburgh*OUTCOME_Asthma*Asthma_Hx*ED_steroids,data=Newmeta,permutations = 999,na.rm=TRUE)
+
+ad<-adonis2(Allsamplesunifrac~OUTCOME_CAP*OUTCOME_Acute_Bronchitis*Cough*Chills*city,data=Newmeta,permutations = 999,na.rm=TRUE)
+ad<-adonis2(Allsamplesunifrac~Asthma_Hx*OUTCOME_Asthma*ED_steroids*CorticosteroidsOral*Detroit,data=Newmeta,permutations = 999,na.rm=TRUE)
+
+
+library("devtools")
+install_github("yijuanhu/LDM")
+```
+
+
+#Multiple Independence testing Chi-square
+```{r}
+blahlist<-list("")
+for (i in 1:dim(Newmeta)[2]){
+  blahlist[[i]]<-Newmeta[,i]
+  print(colnames(Newmeta)[i])
+  print(summary(Newmeta[,i]))
+}
+```
+
+
+```{r}
+ps<-import_biom("/Users/rogersm/MAPLE/SALMerge/Export/Maple.biom",treefilename="/Users/rogersm/MAPLE/SALMerge/Export/tree.nwk",refseqfilename="/Users/rogersm/MAPLE/SALMerge/Export/dna-sequences.fasta",parseFunction=parse_taxonomy_greengenes)
+tree<-phy_tree(ps)
+roottree<-midpoint.root(tree)
+phy_tree(ps)<-roottree
+meta<-sample_data(ps)
+meta$SampleID2<-rownames(meta)
+sample_data(ps)<-meta
+#samplethings<-sample_data(ps)
+#sort(sample_sums(ps))
+meta<-sample_data(ps)
+sums<-sample_sums(ps)
+sums<-cbind(meta,sums)
+#Remove outlier points CRS_02_011_00_DSA2, CRS_01_007_02_S
+a<-ggplot(sums, aes(x=sums))+geom_histogram(bins=100,fill="dodgerblue")+scale_x_log10()+xlab("Sample Sums (log10)")+theme_classic()+geom_vline(xintercept=21390.5)
+#psall<-prune_samples(sample_sums(ps)>=4000,ps)%>%prune_taxa(taxa_sums(.) > 0, .)
+psall<-ps
+metadata<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx")
+metadata2<-metadata[-c(2:4),]
+colnames(metadata2)<-metadata2[1,]
+metadata2<-metadata2[-1,]
+metadata2<-metadata2[,-1]
+q<-colnames(metadata2)
+q<-gsub(" ","_",q)
+q<-gsub("_$","",q)
+colnames(metadata2)<-q
+meta<-sample_data(psall)
+colnames(meta)[1]<-"Patient"
+colnames(metadata2)[2]<-"Patient"
+meta<-as.matrix(meta)
+meta<-as.data.frame(meta)
+colnames(meta)[1]<-"Batch"
+table2<-right_join(metadata2,meta, by="Patient")
+#table2<-cbind(table2,meta$Patient)
+metaABX<-read.xlsx("~/MAPLE/MAPLE_ABX.xlsx",sheet=4)
+colnames(metaABX)[2]<-"Subject_ID"
+metaABX$Subject_ID<-as.factor(metaABX$Subject_ID)
+table3<-left_join(table2,metaABX, by="Subject_ID")
+rownames(table3)<-table3$SampleID2
+Sample_ID<-table3$SampleID2
+table4<-cbind(Sample_ID,table3)
+metaoutcomes<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=5)
+colnames(metaoutcomes)<-metaoutcomes[1,]
+metaoutcomes<-metaoutcomes[-c(1:4),]
+table5<-left_join(table4,metaoutcomes, by="Subject_ID")
+rownames(table5)<-table5$Sample_ID
+#table5[1:290,11]<-"Reference" 
+#metalrti<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=2)
+#colnames(metalrti)[1]<-"Subject_ID"
+#table6<-left_join(table5,metalrti, by="Subject_ID")
+sample_data(psall)<-table5
+meta<-sample_data(psall)
+LRTIstatus<-cbind(table5$OUTCOME_CAP,table5$OUTCOME_HCAP,table5$OUTCOME_Acute_Bronchitis)
+LRTIstatus<-gsub("n",0,LRTIstatus)
+LRTIstatus<-gsub("y",1,LRTIstatus)
+LRTIstatus<-gsub("\\.",0,LRTIstatus)
+rownames(LRTIstatus)<-meta$Sample_ID
+LRTIstatus<-as.data.frame(LRTIstatus)
+LRTIstatus[is.na(LRTIstatus)]<-0
+LRTIstatus<-apply(LRTIstatus, 2, function(x) as.numeric(x))
+LRTIdecision<-rowSums(LRTIstatus)
+LRTIdecision[LRTIdecision>0]<-"y"
+LRTIdecision[LRTIdecision==0]<-"n"
+table6<-cbind(table5,LRTIdecision)
+table6$city<-table6$Site.x
+sample_data(psall)<-table6
+LRTIdiagnosis<-read.xlsx("~/MAPLE/MapleFinalMeta.xlsx",sheet=3)
+LRTIdiagnosisclass<-cbind(LRTIdiagnosis$stnum,LRTIdiagnosis$hosp_diagnosis)
+rownames(LRTIdiagnosisclass)<-rownames(LRTIdiagnosis)
+colnames(LRTIdiagnosisclass)<-c("Subject_ID","LRTICLASS")
+LRTIdiagnosisclass<-as.data.frame(LRTIdiagnosisclass)
+LRTIpositive<-subset(LRTIdiagnosisclass, (LRTICLASS=="1"|LRTICLASS=="4"|LRTICLASS=="6"))
+psall<-subset_samples(psall,Site.y=="F"|Site.y=="O")
+
+#Remove samples that are associated with contaminated control EC5
+#0126_MAPL_01_11100_O_1
+#0126_MAPL_01_11165_F_3
+#0126_MAPL_01_11165_O_3
+#0126_MAPL_01_11344_F_3
+#0126_MAPL_01_11344_O_3
+psall<-subset_samples(psall,Sample_ID!="MAPL-01-11100-O-1"&Sample_ID!="MAPL-01-11165-F-3"&Sample_ID!="MAPL-01-11165-O-3"&Sample_ID!="MAPL-01-11344-F-3"&Sample_ID!="MAPL-01-11344-O-3")
+
+#Remove samples that are too similar to fecal sample from same patient (likely mislabelled)
+#MAPL-01-310237-O-2
+#MAPL-01-310237-O-3
+psall<-subset_samples(psall,Sample_ID!="MAPL-01-310237-O-2"&Sample_ID!="MAPL-01-310237-O-3")
+psall<-psall%>%prune_taxa(taxa_sums(.) > 0, .)
+```
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="F"&Batch=="1"&Site.x!="NA"&Time==1)
+Allsamplesunifrac<-UniFrac(psall_time, weighted=TRUE)
+set.seed(4235421)
+ord <- ordinate(psall_time, "MDS", "wunifrac")
+meta<-meta(psall_time)
+#meta<-as.matrix(meta)
+#meta<-as.data.frame(meta)
+metas<-sanitizer3(meta)
+metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+#testthese<-colnames(metas)
+All<-cbind(metas,ord$vectors)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in 2:dim(metas)[2]){
+varname<-colnames(metas[x])
+print(varname)
+}
+m<-meta(psall_time)
+metadata<-sanitizer3(m)
+sample_data(psall_time)<-metadata
+metadata<-meta(psall_time)
+perm <- how(nperm = 9999)
+setBlocks(perm) <- with(metadata, city)
+
+
+ad_nostrata<-adonis2(Allsamplesunifrac~city+COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Race+Sex+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=TRUE)
+
+ad_strata<-adonis2(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+Race+Sex+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit,data=metadata,permutations = 999,na.rm=perm)
+
+#ad<-adonis2(Allsamplesunifrac~City*COPD_Hx*Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE)
+
+#ad<-adonis(Allsamplesunifrac~COPD_Hx+Asthma_Hx+Current_Smoker+Past_Smoker+HomeOxygen+CorticosteroidsOral+Corticosteroidsinhaled+Bronhciodilators+LeukotrieneReceptorAntagonists+ED_steroids+ED_bronchodilators+Rhonchi+Wheezing+Cough+Chills+Sputum+Dyspnea+Chest_Discomfort+receive_abx+abx_ed+hosp_admit+Overall_Adverse_outcome,data=metadata,permutations = 999,na.rm=TRUE,strata=meta$city)
+
+outcomeadstrata<-adonis2(Allsamplesunifrac~OUTCOME_COPD+OUTCOME_CAP+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,perm=perm,na.rm=TRUE)
+outcomenostrata<-adonis2(Allsamplesunifrac~OUTCOME_COPD+OUTCOME_Asthma+OUTCOME_CAP+OUTCOME_Asthma+OUTCOME_Acute_Bronchitis+Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+#Outcomes
+kable(ad_nostrata, "latex",booktabs = T,caption = "Variables Without Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADnostrata.png")
+
+kable(ad, "latex",booktabs = T,caption = "Variables With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/ADcitystrata.png")
+
+kable(outcomeadstrata, "latex",booktabs = T,caption = "Outcomes With Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/OutcomeADstrata.png")
+
+kable(outcomenostrata, "latex",booktabs = T,caption = "Outcomes No Strata") %>%
+kable_styling(latex_options = c("striped","scale_down")) %>%
+save_kable("~/Desktop/outcomenoADstrata.png")
+ad<-adonis2(Allsamplesunifrac~CorticosteroidsOral*COPD_Hx*OUTCOME_COPD,data=metadata,permutations = 999,na.rm=TRUE)
+kable(ad_nostrata,format="pipe")
+outcomenostratainteractions<-adonis2(Allsamplesunifrac~OUTCOME_COPD*OUTCOME_Asthma*OUTCOME_CAP*OUTCOME_Asthma*OUTCOME_Acute_Bronchitis*Overall_Adverse_outcome,data=metadata,permutations = perm,na.rm=9999)
+
+blahlist<-list("")
+for (i in 1:dim(metas)[2]){
+  blahlist[[i]]<-metas[,i]
+  print(colnames(metas)[i])
+  print(summary(metas[,i]))
+}
+
+```
+
+#Figs
+```{r}
+Asthma<-ggplot(All,aes(x=Axis.1,y=Axis.2,colour=OUTCOME_Asthma))+geom_point()+stat_ellipse()
+```
+
+
+
+```{r}
+tests<-as.list("")
+gplotlist<-as.list("")
+psall_time<-subset_samples(ps_rare, Site.y=="F"&Batch=="1"&Site.x!="NA"&Time==1)
+#testthese<-c(11,13:24,27,28,33:39,54)
+#testthese<-c(11,13:39,58:64) 
+#testthese<-c(11,13:24,27,28,30,33:39)
+Allsamplesunifrac<-phyloseq::distance(psall_time,method="wunifrac")
+set.seed(4235421)
+meta<-meta(psall_time)
+metas<-sanitizer3(meta)
+#metas<-sparserFactors2(metas)
+metas<-cbind(meta$Subject_ID,metas)
+colnames(metas)[1]<-"Subject_ID"
+testthese<-colnames(metas)
+#testthese<-testthese[-c(45:49)]
+#Remove columns that have NA values.
+#metas<-metas[,-c(14:19)]
+for (x in c(17:24,28:29,34:40,59:66,81)){
+varname<-colnames(metas[x])
+print(varname)
+ad<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+ad2<-adonis2(as.dist(Allsamplesunifrac)~metas[,x],data=metas,permutations = 999,na.rm=TRUE)
+mod<-betadisper(Allsamplesunifrac, metas[,x], type="centroid")
+an<-anova(mod)
+pmod <- permutest(mod, permutations = 999, pairwise = TRUE)
+print(pmod)
+s<-plot(mod)
+boxplot(mod)
+mod.HSD <- TukeyHSD(mod,conf.level=0.95)
+print(mod.HSD)
+ordplot<-plot(mod.HSD)
+var<-paste0(varname)
+ano<-anosim(Allsamplesunifrac, metas[,x])
+#q<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=varname))+geom_point()+theme_classic()+stat_ellipse()
+tests[[varname]]<-list(name=varname,adonis=ad,dispersion=mod,anova=an,permuttest=pmod,mod.HSD=mod.HSD,anos=ano,adonis2=ad2)
+}
+```
+
+```{r}
+pdf("~/MAPLE/Maplevarsordinations.pdf")
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.0001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  print (tests[[i]][["name"]])
+  print (tests[[i]][["adonis"]])
+  print ("Beta disper")
+  print (tests[[i]][["permuttest"]]$tab$`Pr(>F)`[1])
+  name<-(tests[[i]][["name"]])
+  plot(tests[[i]][["dispersion"]],main=name)
+  j<-tests[[i]][["adonis"]][1:3]
+  pv<-tests[[i]][["adonis"]]$`Pr(>F)`[1]
+  rv<-tests[[i]][["adonis"]]$R2[1]
+  anod<-tests[[i]][["anos"]]
+  print(anod)
+  text(x= -0.04,y=0.03,labels=paste0("p-value=",pv,"\t","R-squared=",rv))
+}
+}
+dev.off()
+for (i in 2:length(tests)){
+if ((tests[[i]][["adonis"]]$`R2`[1]>0.00001)&(tests[[i]][["adonis"]]$`Pr(>F)`[1]<0.05)){
+  #print (tests[[i]][["name"]])
+  #print (tests[[i]]["anos"])
+  j<-paste(tests[[i]][["name"]],tests[[i]][["adonis"]]$`R2`[1],tests[[i]][["adonis"]]$F[1],tests[[i]][["adonis"]]$`Pr(>F)`[1],sep=" ")
+  print(j)
+}
+}
+#adonis2(as.dist(Allsamplesunifrac)~Site.x+COPD_Hx+HomeOxygen+ED_steroids+ED_bronchodilators+Cough+Chills+OUTCOME_CAP+LRTIdecision,data=metas,strata=Time,permutations = 999,na.rm=TRUE)
+#adonis2(as.dist(Allsamplesunifrac)~COPD_Hx*HomeOxygen*ED_steroids*ED_bronchodilators*Cough*Chills*OUTCOME_CAP*LRTIdecision,data=metas,strata=Site.x,permutations = 999,na.rm=TRUE)
+#Copd<-ggplot(bdiv, aes(x=Axis.1, y=Axis.2, colour=ED_steroids))+geom_point()+theme_classic()+scale_color_manual(values=c("Black","Red","Blue"))+stat_ellipse()
+cscale<-iwanthue(n=10)
+cscale[1:2]<-c("Black","Red")
+plotlist<-as.list("")
+for (i in c("COPD_Hx","HomeOxygen","Corticosteroidsinhaled","Chills","OUTCOME_CAP","OUTCOME_HCAP","OUTCOME_COPD")){
+vecs<-tests[[i]][["dispersion"]]$vectors
+cents<-tests[[i]][["dispersion"]]$centroids
+cents<-as.data.frame(cents)
+cents$State<-rownames(cents)
+colnames(cents)[ncol(cents)]
+vecs<-vecs[,1:2]
+metavecs<-cbind(metas,vecs)
+c<-grep (i, colnames(metavecs))
+State<-metavecs[,c]
+metavecs<-cbind(metavecs,State)
+cents$State<-rownames(cents)
+plotlist[[i]]<-ggplot(metavecs, aes(x=PCoA1, y=PCoA2,colour=State))+geom_point()+geom_point(data=cents,size=5)+stat_ellipse()+scale_colour_manual(values=cscale)+theme_classic()+ggtitle(paste0(i))
+}
+pdf("/Users/rogersm/Documents/MAPLE/FinalFigs/Fig3.pdf",width=11, height=8.5,useDingbats = FALSE)
+grid.arrange(plotlist[[5]],plotlist[[4]],plotlist[[3]],plotlist[[2]])
+dev.off()
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
